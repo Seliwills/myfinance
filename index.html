@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>The Ledger — Finance Manager</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#1C2333">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --paper:#F6F3EC; --paper-alt:#EFEAdc; --card:#FBF9F4;
+    --ink:#1C2333; --ink-soft:#5A5F70; --ink-faint:#8B8D99;
+    --gold:#B8862E; --gold-soft:#E9D9AE;
+    --green:#2F6844; --green-soft:#E3EEE6;
+    --red:#A13D2B; --red-soft:#F4E4DF;
+    --line:#DCD5C2; --line-strong:#C7BEA3;
+    --radius:2px; --shadow:0 1px 2px rgba(28,35,51,0.06), 0 4px 14px rgba(28,35,51,0.05);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;min-height:100vh;}
+  .app{display:flex;min-height:100vh;}
+
+  /* Sidebar */
+  .sidebar{width:216px;flex-shrink:0;background:var(--ink);color:#EDE9DC;display:flex;flex-direction:column;padding:28px 0 16px;}
+  .brand{padding:0 22px 22px;border-bottom:1px solid rgba(237,233,220,0.14);margin-bottom:10px;}
+  .brand .mark{font-family:'Fraunces',serif;font-weight:700;font-size:22px;letter-spacing:0.3px;color:var(--gold-soft);}
+  .brand .tag{font-size:10.5px;letter-spacing:1.6px;text-transform:uppercase;color:#9AA0AD;margin-top:4px;}
+  .nav{display:flex;flex-direction:column;padding:8px 10px;gap:2px;flex:1;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);color:#C6C2B4;cursor:pointer;font-size:13px;font-weight:500;letter-spacing:0.2px;border-left:2px solid transparent;user-select:none;}
+  .nav-item .num{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#6E7180;width:16px;}
+  .nav-item:hover{background:rgba(255,255,255,0.04);color:#EDE9DC;}
+  .nav-item.active{background:rgba(184,134,46,0.14);color:#F3E7C8;border-left:2px solid var(--gold);}
+  .nav-item.active .num{color:var(--gold-soft);}
+  .who{margin:14px 14px 0;padding:10px 11px;background:rgba(255,255,255,0.04);border:1px solid rgba(237,233,220,0.1);border-radius:var(--radius);font-size:11px;color:#9AA0AD;}
+  .who b{color:#EDE9DC;display:block;font-size:12.5px;margin-bottom:2px;}
+  .role-badge{display:inline-block;margin-top:6px;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:0.4px;background:rgba(184,134,46,0.2);color:var(--gold-soft);}
+  .sync-pill{margin:8px 14px 0;padding:9px 11px;background:rgba(255,255,255,0.04);border:1px solid rgba(237,233,220,0.1);border-radius:var(--radius);font-size:11px;color:#9AA0AD;}
+  .sync-pill .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#6E7180;margin-right:6px;}
+  .sync-pill.connected .dot{background:#5FAE7C;}
+  .signout{margin:10px 14px 0;font-size:11px;color:#9AA0AD;cursor:pointer;text-decoration:underline;}
+
+  /* Main */
+  .main{flex:1;min-width:0;padding:30px 40px 60px;max-width:1180px;}
+  .page-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:22px;flex-wrap:wrap;gap:12px;}
+  .page-head h1{font-family:'Fraunces',serif;font-weight:600;font-size:26px;margin:0;letter-spacing:0.2px;}
+  .page-head .sub{color:var(--ink-soft);font-size:13px;margin-top:3px;}
+  .btn{font-family:'Inter',sans-serif;font-size:12.5px;font-weight:600;letter-spacing:0.2px;padding:9px 16px;border-radius:var(--radius);border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;}
+  .btn:hover{background:#2b3348;}
+  .btn.secondary{background:transparent;color:var(--ink);border:1px solid var(--line-strong);}
+  .btn.secondary:hover{background:var(--paper-alt);}
+  .btn.danger{background:transparent;color:var(--red);border:1px solid var(--red);}
+  .btn.danger:hover{background:var(--red-soft);}
+  .btn.small{padding:6px 11px;font-size:11.5px;}
+  .btn:disabled{opacity:0.45;cursor:not-allowed;}
+  .btn.full{width:100%;}
+
+  .grid{display:grid;gap:14px;}
+  .grid.cols-4{grid-template-columns:repeat(4,1fr);}
+  .grid.cols-3{grid-template-columns:repeat(3,1fr);}
+  .grid.cols-2{grid-template-columns:repeat(2,1fr);}
+  @media(max-width:920px){.grid.cols-4{grid-template-columns:repeat(2,1fr);} .grid.cols-3{grid-template-columns:repeat(2,1fr);}}
+  @media(max-width:760px){.sidebar{width:76px;} .brand .tag,.brand .mark,.nav-item span:not(.num),.who,.sync-pill,.signout{display:none;} .main{padding:20px;}}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow);}
+  .stat-label{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;color:var(--ink-faint);font-weight:600;margin-bottom:8px;}
+  .stat-value{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;color:var(--ink);}
+  .stat-value.pos{color:var(--green);} .stat-value.neg{color:var(--red);}
+  .stat-sub{font-size:11.5px;color:var(--ink-faint);margin-top:4px;}
+  .section-title{font-family:'Fraunces',serif;font-weight:600;font-size:15px;margin:26px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;}
+
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+  thead th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:0.8px;color:var(--ink-faint);font-weight:600;padding:10px 12px;background:var(--paper-alt);border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;}
+  thead th:hover{color:var(--ink);}
+  tbody td{padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--paper-alt);}
+  .amt{font-family:'IBM Plex Mono',monospace;font-weight:600;white-space:nowrap;}
+  .amt.pos{color:var(--green);} .amt.neg{color:var(--red);}
+  .tag-chip{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:600;background:var(--paper-alt);color:var(--ink-soft);border:1px solid var(--line);}
+  .tag-chip.personal{background:var(--green-soft);color:var(--green);border-color:transparent;}
+  .tag-chip.business{background:var(--gold-soft);color:#8A6415;border-color:transparent;}
+  .tag-chip.owner{background:var(--gold-soft);color:#8A6415;border-color:transparent;}
+  .tag-chip.editor{background:var(--green-soft);color:var(--green);border-color:transparent;}
+  .tag-chip.viewer{background:var(--paper-alt);color:var(--ink-soft);}
+  .row-actions{display:flex;gap:6px;justify-content:flex-end;}
+  .icon-btn{background:none;border:1px solid var(--line-strong);border-radius:var(--radius);width:26px;height:26px;cursor:pointer;color:var(--ink-soft);font-size:12px;display:flex;align-items:center;justify-content:center;}
+  .icon-btn:hover{background:var(--paper-alt);}
+  .empty-state{padding:40px 20px;text-align:center;color:var(--ink-faint);font-size:13px;}
+
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center;}
+  input,select,textarea{font-family:'Inter',sans-serif;font-size:13px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--card);color:var(--ink);}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--gold);}
+  .toolbar input[type=text],.toolbar input[type=search]{width:200px;}
+  label{font-size:11.5px;font-weight:600;color:var(--ink-soft);display:block;margin-bottom:5px;letter-spacing:0.2px;}
+  .field{margin-bottom:13px;}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+
+  .overlay{position:fixed;inset:0;background:rgba(28,35,51,0.45);display:none;align-items:flex-start;justify-content:center;padding:50px 20px;z-index:50;overflow:auto;}
+  .overlay.open{display:flex;}
+  .modal{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);width:100%;max-width:460px;padding:22px 24px 20px;box-shadow:0 12px 40px rgba(0,0,0,0.2);}
+  .modal h3{font-family:'Fraunces',serif;font-size:18px;margin:0 0 16px;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+
+  .bar-track{background:var(--paper-alt);border:1px solid var(--line);border-radius:20px;height:8px;overflow:hidden;}
+  .bar-fill{height:100%;background:var(--gold);}
+  .bar-fill.over{background:var(--red);} .bar-fill.good{background:var(--green);}
+
+  .pref-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line);}
+  .pref-row:last-child{border-bottom:none;}
+  .pref-rank{font-family:'IBM Plex Mono',monospace;font-weight:700;color:var(--ink-faint);width:22px;text-align:center;}
+  .pref-cutoff{border-top:2px dashed var(--red);position:relative;margin:4px 0;}
+  .pref-cutoff span{position:absolute;top:-9px;left:12px;background:var(--card);padding:0 8px;font-size:10px;letter-spacing:0.6px;text-transform:uppercase;color:var(--red);font-weight:700;}
+  .pref-status{font-size:10.5px;font-weight:700;letter-spacing:0.4px;padding:2px 8px;border-radius:20px;}
+  .pref-status.funded{background:var(--green-soft);color:var(--green);}
+  .pref-status.deferred{background:var(--red-soft);color:var(--red);}
+
+  .settings-block{max-width:560px;}
+  .helptext{font-size:12px;color:var(--ink-faint);margin-top:5px;line-height:1.55;}
+  .kbd{font-family:'IBM Plex Mono',monospace;background:var(--paper-alt);padding:1px 5px;border-radius:3px;font-size:11.5px;}
+  .divider{height:1px;background:var(--line);margin:22px 0;}
+  .toast{position:fixed;bottom:22px;right:22px;background:var(--ink);color:var(--paper);padding:11px 18px;border-radius:var(--radius);font-size:12.5px;box-shadow:0 8px 24px rgba(0,0,0,0.25);opacity:0;transform:translateY(8px);transition:all .25s ease;z-index:100;pointer-events:none;max-width:320px;}
+  .toast.show{opacity:1;transform:translateY(0);}
+
+  /* Login screen */
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--ink);}
+  .login-card{background:var(--card);border-radius:4px;padding:36px 34px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.35);}
+  .login-card .mark{font-family:'Fraunces',serif;font-weight:700;font-size:26px;color:var(--ink);margin-bottom:4px;}
+  .login-card .tag{font-size:11px;letter-spacing:1.4px;text-transform:uppercase;color:var(--ink-faint);margin-bottom:22px;}
+  .login-tabs{display:flex;gap:4px;margin-bottom:18px;background:var(--paper-alt);border-radius:4px;padding:3px;}
+  .login-tab{flex:1;text-align:center;padding:7px;font-size:12px;font-weight:600;border-radius:3px;cursor:pointer;color:var(--ink-soft);}
+  .login-tab.active{background:var(--card);color:var(--ink);box-shadow:var(--shadow);}
+  .login-err{background:var(--red-soft);color:var(--red);font-size:12px;padding:9px 11px;border-radius:3px;margin-bottom:14px;display:none;}
+  .login-err.show{display:block;}
+
+  ::selection{background:var(--gold-soft);}
+
+  body[data-theme="dark"]{
+    --paper:#14181F; --paper-alt:#1B212C; --card:#1D232E;
+    --ink:#EDE9DC; --ink-soft:#B7BAC4; --ink-faint:#7C8291;
+    --line:#2B3140; --line-strong:#3A4152;
+  }
+  body[data-theme="dark"] .sidebar{background:#0F131A;}
+
+  @media print{
+    .sidebar, .page-head button, .toolbar, .btn, .who, .sync-pill, .signout{display:none !important;}
+    .main{padding:0 !important;max-width:none !important;}
+    body{background:#fff;color:#000;}
+    #reportPrintArea{display:block !important;}
+  }
+
+  /* PIN lock */
+  .pin-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--ink);}
+  .pin-card{background:var(--card);padding:34px;border-radius:4px;text-align:center;width:100%;max-width:320px;box-shadow:0 20px 60px rgba(0,0,0,0.35);}
+  .pin-dots{display:flex;gap:10px;justify-content:center;margin:16px 0 20px;}
+  .pin-dot{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--line-strong);}
+  .pin-dot.filled{background:var(--gold);border-color:var(--gold);}
+  .pin-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .pin-key{padding:16px 0;font-size:18px;font-weight:600;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper-alt);cursor:pointer;color:var(--ink);}
+  .pin-key:hover{background:var(--paper);}
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================
+   AUTH + STATE
+========================================================= */
+const AUTH_KEY = 'ledgerAuth_v2';
+const STORAGE_KEY = 'ledgerFinanceState_v2';
+const DEFAULT_STATE = {
+  transactions: [], budgets: [], goals: [], investments: [], preferences: [],
+  accounts: [], categories: [], loans: [], loanPayments: [], exchangeRates: [],
+  settings: { autoSync:true, currency:'GHS', prefBudget:0, darkMode:false, pinHash:'', ratesFetchedAt:null },
+  users: [], log: [],
+  lastSynced: null
+};
+let auth = loadAuth();      // {url, email, code, role, name}
+let state = loadState();
+let currentTab = 'dashboard';
+let sortState = {};
+let editing = null;
+
+function loadAuth(){
+  try{ const raw = localStorage.getItem(AUTH_KEY); return raw?JSON.parse(raw):null; }catch(e){ return null; }
+}
+function saveAuth(){ localStorage.setItem(AUTH_KEY, JSON.stringify(auth)); }
+function clearAuth(){ localStorage.removeItem(AUTH_KEY); auth=null; }
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return structuredClone(DEFAULT_STATE);
+    const parsed = JSON.parse(raw);
+    return Object.assign(structuredClone(DEFAULT_STATE), parsed, { settings: Object.assign({}, DEFAULT_STATE.settings, parsed.settings||{}) });
+  }catch(e){ return structuredClone(DEFAULT_STATE); }
+}
+function saveState(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if(state.settings.autoSync && auth && canEdit()) debouncedPush();
+}
+let pushTimer=null;
+function debouncedPush(){ clearTimeout(pushTimer); pushTimer=setTimeout(()=>pushToSheet(true), 1200); }
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function money(n){
+  const v = Number(n)||0;
+  const sym = state.settings.currency==='GHS' ? '\u20B5' : (state.settings.currency==='USD'?'$':(state.settings.currency==='NGN'?'\u20A6':(state.settings.currency==='EUR'?'\u20AC':state.settings.currency+' ')));
+  return sym + v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function moneyIn(n, ccy){
+  const v = Number(n)||0;
+  const c = ccy || state.settings.currency;
+  const sym = c==='GHS' ? '\u20B5' : (c==='USD'?'$':(c==='NGN'?'\u20A6':(c==='EUR'?'\u20AC':(c==='GBP'?'\u00A3':c+' '))));
+  return sym + v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer=setTimeout(()=>t.classList.remove('show'),2800);
+}
+function canEdit(){ return auth && (auth.role==='Editor'||auth.role==='Owner'); }
+function isOwner(){ return auth && auth.role==='Owner'; }
+function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDate(d){ if(!d) return ''; const dt=new Date(d); if(isNaN(dt)) return d; return dt.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+function isThisMonth(dateStr){ const d=new Date(dateStr), n=new Date(); return d.getFullYear()===n.getFullYear() && d.getMonth()===n.getMonth(); }
+
+/* =========================================================
+   BOOTSTRAP — handle invite links, then decide login vs app
+========================================================= */
+async function bootstrap(){
+  applyTheme();
+  const params = new URLSearchParams(window.location.search);
+  if(params.has('u') && params.has('e') && params.has('c')){
+    const url = params.get('u'), email = params.get('e'), code = params.get('c');
+    history.replaceState({}, '', window.location.pathname);
+    const res = await attemptLogin(url, email, code);
+    if(res.ok){ renderRoot(); processRecurringTransactions(); return; }
+  }
+  if(auth && auth.url && auth.email && auth.code){
+    renderRoot();
+    processRecurringTransactions();
+    pullFromSheet(true); // refresh in background
+  } else {
+    renderRoot();
+  }
+}
+
+async function attemptLogin(url, email, code, name){
+  try{
+    const u = new URL(url);
+    u.searchParams.set('email', email);
+    u.searchParams.set('code', code);
+    const res = await fetch(u.toString());
+    const json = await res.json();
+    if(!json.ok) return { ok:false, error: json.error };
+    auth = { url, email, code, role: json.role, name: json.name || name || email.split('@')[0] };
+    saveAuth();
+    ['transactions','budgets','goals','investments','preferences','accounts','categories','loans','loanPayments','exchangeRates'].forEach(k=>{ if(json.data[k]) state[k]=json.data[k]; });
+    if(json.users) state.users = json.users;
+    if(json.log) state.log = json.log;
+    state.lastSynced = new Date().toISOString();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return { ok:true };
+  }catch(e){ return { ok:false, error:'Could not reach that Sheet URL. Check it and try again.' }; }
+}
+
+/* =========================================================
+   ROOT RENDER
+========================================================= */
+function renderRoot(){
+  applyTheme();
+  const root = document.getElementById('root');
+  if(!auth){ root.innerHTML = loginScreenHtml(); attachLoginHandlers(); return; }
+  if(state.settings.pinHash && !pinUnlockedThisSession){ root.innerHTML = pinLockScreenHtml(); attachPinHandlers(); return; }
+  root.innerHTML = `<div class="app">
+    <div class="sidebar">
+      <div class="brand"><div class="mark">The Ledger</div><div class="tag">Personal &amp; Business</div></div>
+      <div class="nav" id="nav"></div>
+      <div class="who"><b>${escapeHtml(auth.name)}</b>${escapeHtml(auth.email)}<div class="role-badge">${auth.role}</div></div>
+      <div class="sync-pill" id="syncPill"><span class="dot"></span><span id="syncText">—</span></div>
+      <div class="signout" id="signOutBtn">Switch account / sign out</div>
+    </div>
+    <div class="main" id="main"></div>
+  </div>`;
+  document.getElementById('signOutBtn').onclick = ()=>{
+    if(!confirm('Sign out? You can log back in with your email and access code any time.')) return;
+    clearAuth(); currentTab='dashboard'; renderRoot();
+  };
+  render();
+}
+
+function loginScreenHtml(){
+  return `<div class="login-wrap"><div class="login-card">
+    <div class="mark">The Ledger</div>
+    <div class="tag">Personal &amp; Business Finance</div>
+    <div class="login-err" id="loginErr"></div>
+    <div class="field"><label>Google Sheet connection URL</label><input type="text" id="l_url" placeholder="https://script.google.com/macros/s/…/exec"></div>
+    <div class="field-row">
+      <div class="field"><label>Your name</label><input type="text" id="l_name" placeholder="Kwame"></div>
+      <div class="field"><label>Your email</label><input type="text" id="l_email" placeholder="you@email.com"></div>
+    </div>
+    <div class="field"><label>Access code</label><input type="text" id="l_code" placeholder="Owner code, or the code you were emailed"></div>
+    <button class="btn full" id="l_submit">Enter</button>
+    <div class="helptext">First time setting this up? Deploy the included <span class="kbd">AppsScript.gs</span> to a Google Sheet, set an <span class="kbd">ADMIN_CODE</span> in its Script Properties, then enter that URL and code above — you'll become the Owner automatically. Everyone you invite afterward gets their own emailed code.</div>
+  </div></div>`;
+}
+function attachLoginHandlers(){
+  document.getElementById('l_submit').onclick = async ()=>{
+    const url = document.getElementById('l_url').value.trim();
+    const name = document.getElementById('l_name').value.trim();
+    const email = document.getElementById('l_email').value.trim();
+    const code = document.getElementById('l_code').value.trim();
+    const errEl = document.getElementById('loginErr');
+    errEl.classList.remove('show');
+    if(!url || !email || !code){ errEl.textContent='Fill in the Sheet URL, your email, and your access code.'; errEl.classList.add('show'); return; }
+    const btn = document.getElementById('l_submit'); btn.disabled=true; btn.textContent='Connecting…';
+    const res = await attemptLogin(url, email, code, name);
+    btn.disabled=false; btn.textContent='Enter';
+    if(!res.ok){ errEl.textContent=res.error||'Could not log in — check your details.'; errEl.classList.add('show'); return; }
+    renderRoot();
+    toast('Welcome, '+auth.name);
+  };
+}
+
+/* =========================================================
+   NAV
+========================================================= */
+function tabs(){
+  const t = [
+    {id:'dashboard', label:'Dashboard', n:'01'},
+    {id:'transactions', label:'Transactions', n:'02'},
+    {id:'accounts', label:'Accounts', n:'03'},
+    {id:'categories', label:'Categories', n:'04'},
+    {id:'budgets', label:'Budgets', n:'05'},
+    {id:'goals', label:'Goals & Planning', n:'06'},
+    {id:'loans', label:'Loans', n:'07'},
+    {id:'investments', label:'Investments', n:'08'},
+    {id:'preferences', label:'Scale of Preference', n:'09'},
+    {id:'insights', label:'Insights', n:'10'},
+    {id:'reports', label:'Reports', n:'11'},
+  ];
+  let n = 12;
+  if(isOwner()) t.push({id:'people', label:'People', n: String(n++).padStart(2,'0')});
+  t.push({id:'settings', label:'Settings', n: String(n++).padStart(2,'0')});
+  return t;
+}
+function renderNav(){
+  const nav=document.getElementById('nav'); if(!nav) return;
+  nav.innerHTML='';
+  tabs().forEach(t=>{
+    const el=document.createElement('div');
+    el.className='nav-item'+(currentTab===t.id?' active':'');
+    el.innerHTML=`<span class="num">${t.n}</span><span>${t.label}</span>`;
+    el.onclick=()=>{ currentTab=t.id; render(); };
+    nav.appendChild(el);
+  });
+}
+function updateSyncPill(){
+  const pill=document.getElementById('syncPill'); if(!pill) return;
+  const txt=document.getElementById('syncText');
+  pill.classList.remove('connected');
+  if(state.lastSynced){ pill.classList.add('connected'); txt.textContent='Synced '+timeAgo(state.lastSynced); }
+  else txt.textContent='Not synced yet';
+}
+function timeAgo(iso){
+  const s=Math.floor((Date.now()-new Date(iso).getTime())/1000);
+  if(s<60) return 'just now';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400) return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+
+/* =========================================================
+   RENDER TAB CONTENT
+========================================================= */
+function render(){
+  renderNav(); updateSyncPill();
+  const main=document.getElementById('main'); if(!main) return;
+  if(currentTab==='dashboard') main.innerHTML=renderDashboard();
+  else if(currentTab==='transactions') main.innerHTML=renderTransactions();
+  else if(currentTab==='accounts') main.innerHTML=renderAccounts();
+  else if(currentTab==='categories') main.innerHTML=renderCategories();
+  else if(currentTab==='budgets') main.innerHTML=renderBudgets();
+  else if(currentTab==='goals') main.innerHTML=renderGoals();
+  else if(currentTab==='loans') main.innerHTML=renderLoans();
+  else if(currentTab==='investments') main.innerHTML=renderInvestments();
+  else if(currentTab==='preferences') main.innerHTML=renderPreferences();
+  else if(currentTab==='insights') main.innerHTML=renderInsights();
+  else if(currentTab==='reports') main.innerHTML=renderReports();
+  else if(currentTab==='people' && isOwner()) main.innerHTML=renderPeople();
+  else if(currentTab==='settings') main.innerHTML=renderSettings();
+  attachHandlers();
+}
+
+/* ---------- Currency conversion ---------- */
+function accountCurrency(accountName){
+  const acc = state.accounts.find(a=>a.name===accountName);
+  return acc ? acc.currency : state.settings.currency;
+}
+function rateFor(fromCcy, toCcy){
+  if(!fromCcy || !toCcy || fromCcy===toCcy) return 1;
+  const direct = state.exchangeRates.find(r=>r.fromCurrency===fromCcy && r.toCurrency===toCcy);
+  if(direct) return Number(direct.rate)||1;
+  const inverse = state.exchangeRates.find(r=>r.fromCurrency===toCcy && r.toCurrency===fromCcy);
+  if(inverse && Number(inverse.rate)) return 1/Number(inverse.rate);
+  return null; // unknown — caller should flag this
+}
+function toBase(amount, fromCcy){
+  const base = state.settings.currency;
+  const r = rateFor(fromCcy, base);
+  return r===null ? Number(amount)||0 : (Number(amount)||0) * r; // falls back to face value if no rate, flagged elsewhere
+}
+function accountNames(){ return state.accounts.map(a=>a.name); }
+function accountOptionsHtml(selected){
+  const names = accountNames();
+  if(names.length===0) return `<option value="">No accounts yet — add one first</option>`;
+  return names.map(n=>`<option ${n===selected?'selected':''}>${escapeHtml(n)}</option>`).join('');
+}
+function categoryDatalistHtml(type){
+  const cats = state.categories.filter(c=> !type || c.type===type);
+  return `<datalist id="categoryOptions">${cats.map(c=>`<option value="${escapeHtml(c.name)}">`).join('')}</datalist>`;
+}
+
+/* ---------- Dashboard ---------- */
+function computeTotals(account){
+  const txs = state.transactions.filter(t=> account==='all' ? true : t.account===account);
+  const income = txs.filter(t=>t.type==='Income').reduce((s,t)=>s+Number(t.amount||0),0);
+  const expense = txs.filter(t=>t.type==='Expense').reduce((s,t)=>s+Number(t.amount||0),0);
+  return {income, expense, net: income-expense};
+}
+// Same as computeTotals but converts each transaction into the base currency
+// (Settings > base currency) using stored/fetched exchange rates first.
+function computeTotalsBase(account){
+  const txs = state.transactions.filter(t=> account==='all' ? true : t.account===account);
+  let income=0, expense=0, unrated=false;
+  txs.forEach(t=>{
+    const ccy = accountCurrency(t.account);
+    const r = rateFor(ccy, state.settings.currency);
+    if(r===null) unrated=true;
+    const converted = toBase(t.amount, ccy);
+    if(t.type==='Income') income+=converted; else if(t.type==='Expense') expense+=converted;
+  });
+  return {income, expense, net: income-expense, unrated};
+}
+function renderDashboard(){
+  const allBase = computeTotalsBase('all');
+  const invValue = state.investments.reduce((s,i)=>s+toBase(i.currentValue, accountCurrency(i.account)),0);
+  const invCost = state.investments.reduce((s,i)=>s+toBase(i.amountInvested, accountCurrency(i.account)),0);
+  const loanOutBase = state.loans.filter(l=>l.direction==='Lent'&&l.status!=='Paid').reduce((s,l)=>s+toBase(loanBalance(l), l.currency||state.settings.currency),0);
+  const loanOweBase = state.loans.filter(l=>l.direction==='Borrowed'&&l.status!=='Paid').reduce((s,l)=>s+toBase(loanBalance(l), l.currency||state.settings.currency),0);
+  const netWorth = allBase.net + invValue + loanOutBase - loanOweBase;
+  const recent = [...state.transactions].sort((a,b)=> new Date(b.date)-new Date(a.date)).slice(0,6);
+  const topAccounts = state.accounts.slice(0,3);
+
+  const months=[]; const now=new Date();
+  for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push({key:d.getFullYear()+'-'+d.getMonth(), label:d.toLocaleString(undefined,{month:'short'})}); }
+  const chartData = months.map(m=>{
+    const [y,mo]=m.key.split('-').map(Number);
+    const inc = state.transactions.filter(t=>{const dt=new Date(t.date);return t.type==='Income'&&dt.getFullYear()===y&&dt.getMonth()===mo;}).reduce((s,t)=>s+toBase(t.amount, accountCurrency(t.account)),0);
+    const exp = state.transactions.filter(t=>{const dt=new Date(t.date);return t.type==='Expense'&&dt.getFullYear()===y&&dt.getMonth()===mo;}).reduce((s,t)=>s+toBase(t.amount, accountCurrency(t.account)),0);
+    return {label:m.label, inc, exp};
+  });
+  const maxVal = Math.max(1,...chartData.map(d=>Math.max(d.inc,d.exp)));
+  const alerts = computeInsights();
+
+  return `
+  <div class="page-head">
+    <div><h1>Dashboard</h1><div class="sub">Overview across all accounts, converted to ${state.settings.currency}</div></div>
+    <button class="btn secondary small" id="btnSyncNow">Sync now</button>
+  </div>
+  ${allBase.unrated?`<div class="card" style="margin-bottom:14px;border-color:var(--gold);"><div class="stat-sub" style="color:#8A6415;">Some accounts use a currency with no exchange rate set yet — those amounts are shown at face value until you add a rate in Settings.</div></div>`:''}
+  <div class="grid cols-4">
+    <div class="card"><div class="stat-label">Net worth</div><div class="stat-value ${netWorth>=0?'pos':'neg'}">${money(netWorth)}</div><div class="stat-sub">Cash + investments + loans out − loans owed</div></div>
+    <div class="card"><div class="stat-label">Cash flow (all accounts)</div><div class="stat-value ${allBase.net>=0?'pos':'neg'}">${money(allBase.net)}</div><div class="stat-sub">${money(allBase.income)} in · ${money(allBase.expense)} out</div></div>
+    <div class="card"><div class="stat-label">Investments</div><div class="stat-value ${invValue-invCost>=0?'pos':'neg'}">${money(invValue)}</div><div class="stat-sub">Cost basis ${money(invCost)}</div></div>
+    <div class="card"><div class="stat-label">Loans</div><div class="stat-value ${loanOutBase-loanOweBase>=0?'pos':'neg'}">${money(loanOutBase-loanOweBase)}</div><div class="stat-sub">${money(loanOutBase)} owed to you · ${money(loanOweBase)} you owe</div></div>
+  </div>
+  ${topAccounts.length>0?`
+  <div class="section-title">Accounts</div>
+  <div class="grid cols-3">
+    ${topAccounts.map(a=>{ const t=computeTotals(a.name); const net=t.net+Number(a.openingBalance||0);
+      return `<div class="card"><div class="stat-label">${escapeHtml(a.name)}</div><div class="stat-value ${net>=0?'pos':'neg'}">${moneyIn(net,a.currency)}</div><div class="stat-sub">${escapeHtml(a.type)} · ${escapeHtml(a.currency)}</div></div>`; }).join('')}
+  </div>`:''}
+  <div class="section-title">Income vs expense — last 6 months</div>
+  <div class="card">
+    <svg viewBox="0 0 560 160" width="100%" height="160">
+      ${chartData.map((d,i)=>{ const x=20+i*90; const incH=(d.inc/maxVal)*110, expH=(d.exp/maxVal)*110;
+        return `<rect x="${x}" y="${130-incH}" width="16" height="${incH}" fill="#2F6844" rx="1"></rect>
+          <rect x="${x+20}" y="${130-expH}" width="16" height="${expH}" fill="#A13D2B" rx="1"></rect>
+          <text x="${x+18}" y="148" font-size="10.5" fill="#8B8D99" text-anchor="middle" font-family="Inter,sans-serif">${d.label}</text>`;
+      }).join('')}
+    </svg>
+    <div style="display:flex;gap:16px;font-size:11.5px;color:var(--ink-soft);margin-top:4px;">
+      <span><span style="display:inline-block;width:8px;height:8px;background:#2F6844;border-radius:2px;margin-right:5px;"></span>Income</span>
+      <span><span style="display:inline-block;width:8px;height:8px;background:#A13D2B;border-radius:2px;margin-right:5px;"></span>Expense</span>
+    </div>
+  </div>
+  ${alerts.length>0?`
+  <div class="section-title">Alerts <span class="tag-chip" style="margin:0;">${alerts.length}</span></div>
+  <div class="card">${alerts.slice(0,4).map(a=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:12.5px;">⚠ ${escapeHtml(a)}</div>`).join('')}${alerts.length>4?`<div style="padding-top:8px;font-size:11.5px;color:var(--ink-faint);">+${alerts.length-4} more in Insights</div>`:''}</div>`:''}
+  <div class="grid cols-2" style="margin-top:26px;">
+    <div>
+      <div class="section-title">Recent transactions</div>
+      <table><thead><tr><th>Date</th><th>Description</th><th>Account</th><th style="text-align:right;">Amount</th></tr></thead>
+      <tbody>
+        ${recent.length===0?`<tr><td colspan="4"><div class="empty-state">No transactions yet</div></td></tr>`:
+          recent.map(t=>`<tr><td>${fmtDate(t.date)}</td><td>${escapeHtml(t.description||t.category||'')}</td>
+            <td><span class="tag-chip ${t.account==='Business'?'business':'personal'}">${escapeHtml(t.account)}</span></td>
+            <td class="amt ${t.type==='Income'?'pos':'neg'}" style="text-align:right;">${t.type==='Income'?'+':'-'}${moneyIn(t.amount, accountCurrency(t.account))}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div>
+      <div class="section-title">Budget health</div>
+      <div class="card">
+        ${state.budgets.length===0?`<div class="empty-state">No budgets set yet</div>`:
+          state.budgets.map(b=>{
+            const spent = state.transactions.filter(t=>t.type==='Expense'&&t.category===b.category&&t.account===b.account&&isThisMonth(t.date)).reduce((s,t)=>s+Number(t.amount||0),0);
+            const pct = Math.min(100,(spent/(Number(b.monthlyLimit)||1))*100);
+            const over = spent > Number(b.monthlyLimit);
+            const ccy = accountCurrency(b.account);
+            return `<div style="margin-bottom:14px;">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;">
+                <span>${escapeHtml(b.category)} <span class="tag-chip ${b.account==='Business'?'business':'personal'}" style="margin-left:4px;">${escapeHtml(b.account)}</span></span>
+                <span class="amt">${moneyIn(spent,ccy)} / ${moneyIn(b.monthlyLimit,ccy)}</span></div>
+              <div class="bar-track"><div class="bar-fill ${over?'over':'good'}" style="width:${pct}%;"></div></div></div>`;
+          }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- Sort helper ---------- */
+function sortRows(rows, entity, defaultKey){
+  const s = sortState[entity] || {key:defaultKey, dir:-1};
+  return [...rows].sort((a,b)=>{
+    let av=a[s.key], bv=b[s.key];
+    if(['amount','monthlyLimit','targetAmount','currentAmount','amountInvested','currentValue','estimatedCost','rank'].includes(s.key)){ av=Number(av)||0; bv=Number(bv)||0; }
+    if(av<bv) return -1*s.dir; if(av>bv) return 1*s.dir; return 0;
+  });
+}
+function setSort(entity,key,defaultDir){
+  const cur = sortState[entity];
+  if(cur && cur.key===key) cur.dir*=-1; else sortState[entity]={key, dir:defaultDir||1};
+  render();
+}
+
+/* ---------- Transactions ---------- */
+let txFilters = {q:'', account:'all', type:'all'};
+function renderTransactions(){
+  let rows = state.transactions.filter(t=>{
+    if(txFilters.account!=='all' && t.account!==txFilters.account) return false;
+    if(txFilters.type!=='all' && t.type!==txFilters.type) return false;
+    if(txFilters.q){ const q=txFilters.q.toLowerCase(); const hay=(t.description+' '+t.category+' '+t.tags).toLowerCase(); if(!hay.includes(q)) return false; }
+    return true;
+  });
+  rows = sortRows(rows,'transactions','date');
+  const totalIn = rows.filter(t=>t.type==='Income').reduce((s,t)=>s+Number(t.amount||0),0);
+  const totalOut = rows.filter(t=>t.type==='Expense').reduce((s,t)=>s+Number(t.amount||0),0);
+  const canE = canEdit();
+  return `
+  <div class="page-head">
+    <div><h1>Transactions</h1><div class="sub">${rows.length} record${rows.length!==1?'s':''} · +${money(totalIn)} / -${money(totalOut)}</div></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn secondary small" id="btnExportTxCsv">Export CSV</button>
+      ${canE?`<button class="btn" id="btnAddTx">+ Add transaction</button>`:''}
+    </div>
+  </div>
+  <div class="toolbar">
+    <input type="text" placeholder="Search description, category, tags…" id="txSearch" value="${escapeHtml(txFilters.q)}">
+    <select id="txAccountFilter">
+      <option value="all" ${txFilters.account==='all'?'selected':''}>All accounts</option>
+      ${accountNames().map(n=>`<option value="${escapeHtml(n)}" ${txFilters.account===n?'selected':''}>${escapeHtml(n)}</option>`).join('')}
+    </select>
+    <select id="txTypeFilter">
+      <option value="all" ${txFilters.type==='all'?'selected':''}>All types</option>
+      <option value="Income" ${txFilters.type==='Income'?'selected':''}>Income</option>
+      <option value="Expense" ${txFilters.type==='Expense'?'selected':''}>Expense</option>
+    </select>
+    ${canE?`<button class="btn danger small" id="btnBulkDelete" style="display:none;margin-left:auto;">Delete selected</button>`:''}
+  </div>
+  <table>
+    <thead><tr>
+      ${canE?`<th style="width:30px;"><input type="checkbox" id="txSelectAll"></th>`:''}
+      <th data-sort="date">Date</th><th data-sort="type">Type</th><th data-sort="account">Account</th>
+      <th data-sort="category">Category</th><th>Description</th><th data-sort="amount" style="text-align:right;">Amount</th><th></th>
+    </tr></thead>
+    <tbody>
+      ${rows.length===0?`<tr><td colspan="8"><div class="empty-state">No transactions match.</div></td></tr>`:
+        rows.map(t=>`<tr>
+          ${canE?`<td><input type="checkbox" class="txRowSelect" value="${t.id}"></td>`:''}
+          <td>${fmtDate(t.date)}</td><td>${t.type}${t.recurring?` <span class="tag-chip" title="Repeats ${t.recurring}">↻</span>`:''}</td>
+          <td><span class="tag-chip ${t.account==='Business'?'business':'personal'}">${escapeHtml(t.account)}</span></td>
+          <td>${escapeHtml(t.category)}</td><td>${escapeHtml(t.description)}</td>
+          <td class="amt ${t.type==='Income'?'pos':'neg'}" style="text-align:right;">${t.type==='Income'?'+':'-'}${money(t.amount)}</td>
+          <td>${canE?`<div class="row-actions"><button class="icon-btn" data-edit="transactions:${t.id}">✎</button><button class="icon-btn" data-del="transactions:${t.id}">✕</button></div>`:''}</td>
+        </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+function txModal(id){
+  const t = id ? state.transactions.find(x=>x.id===id) : {date:new Date().toISOString().slice(0,10),type:'Expense',account:accountNames()[0]||'',category:'',amount:'',description:'',tags:'',recurring:''};
+  editing = {entity:'transactions', id};
+  document.getElementById('modalBody').innerHTML = `
+    <h3>${id?'Edit':'Add'} transaction</h3>
+    <div class="field-row">
+      <div class="field"><label>Date</label><input type="date" id="f_date" value="${t.date?String(t.date).slice(0,10):''}"></div>
+      <div class="field"><label>Type</label><select id="f_type"><option ${t.type==='Expense'?'selected':''}>Expense</option><option ${t.type==='Income'?'selected':''}>Income</option></select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Account</label><select id="f_account">${accountOptionsHtml(t.account)}</select></div>
+      <div class="field"><label>Amount (${escapeHtml(accountCurrency(t.account)||state.settings.currency)})</label><input type="number" step="0.01" id="f_amount" value="${t.amount}"></div>
+    </div>
+    <div class="field"><label>Category</label><input type="text" id="f_category" list="categoryOptions" placeholder="e.g. Salary, Rent, Supplies" value="${escapeHtml(t.category)}">${categoryDatalistHtml(t.type)}</div>
+    <div class="field"><label>Description</label><input type="text" id="f_description" value="${escapeHtml(t.description)}"></div>
+    <div class="field-row">
+      <div class="field"><label>Tags (comma separated)</label><input type="text" id="f_tags" value="${escapeHtml(t.tags||'')}"></div>
+      <div class="field"><label>Repeats</label><select id="f_recurring">
+        <option value="" ${!t.recurring?'selected':''}>Does not repeat</option>
+        <option value="Weekly" ${t.recurring==='Weekly'?'selected':''}>Weekly</option>
+        <option value="Monthly" ${t.recurring==='Monthly'?'selected':''}>Monthly</option>
+        <option value="Yearly" ${t.recurring==='Yearly'?'selected':''}>Yearly</option>
+      </select></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Budgets ---------- */
+function renderBudgets(){
+  const rows = sortRows(state.budgets,'budgets','category'); const canE=canEdit();
+  return `
+  <div class="page-head"><div><h1>Budgets</h1><div class="sub">Monthly spending limits by category</div></div>
+    ${canE?`<button class="btn" id="btnAddBudget">+ Add budget</button>`:''}</div>
+  <table><thead><tr><th>Category</th><th>Account</th><th style="text-align:right;">Monthly limit</th><th style="text-align:right;">Spent this month</th><th>Notes</th><th></th></tr></thead>
+  <tbody>
+    ${rows.length===0?`<tr><td colspan="6"><div class="empty-state">No budgets yet</div></td></tr>`:
+    rows.map(b=>{
+      const spent = state.transactions.filter(t=>t.type==='Expense'&&t.category===b.category&&t.account===b.account&&isThisMonth(t.date)).reduce((s,t)=>s+Number(t.amount||0),0);
+      const over = spent>Number(b.monthlyLimit);
+      const ccy = accountCurrency(b.account);
+      return `<tr><td>${escapeHtml(b.category)}</td><td><span class="tag-chip ${b.account==='Business'?'business':'personal'}">${escapeHtml(b.account)}</span></td>
+        <td class="amt" style="text-align:right;">${moneyIn(b.monthlyLimit, ccy)}</td>
+        <td class="amt ${over?'neg':''}" style="text-align:right;">${moneyIn(spent, ccy)}</td>
+        <td>${escapeHtml(b.notes||'')}</td>
+        <td>${canE?`<div class="row-actions"><button class="icon-btn" data-edit="budgets:${b.id}">✎</button><button class="icon-btn" data-del="budgets:${b.id}">✕</button></div>`:''}</td></tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+function budgetModal(id){
+  const b = id?state.budgets.find(x=>x.id===id):{category:'',account:accountNames()[0]||'',monthlyLimit:'',notes:''};
+  editing={entity:'budgets',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} budget</h3>
+    <div class="field"><label>Category</label><input type="text" id="f_category" list="categoryOptions" value="${escapeHtml(b.category)}">${categoryDatalistHtml('Expense')}</div>
+    <div class="field-row">
+      <div class="field"><label>Account</label><select id="f_account">${accountOptionsHtml(b.account)}</select></div>
+      <div class="field"><label>Monthly limit (${escapeHtml(accountCurrency(b.account)||state.settings.currency)})</label><input type="number" step="0.01" id="f_monthlyLimit" value="${b.monthlyLimit}"></div>
+    </div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value="${escapeHtml(b.notes||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Goals ---------- */
+function renderGoals(){
+  const rows = sortRows(state.goals,'goals','deadline'); const canE=canEdit();
+  return `
+  <div class="page-head"><div><h1>Goals &amp; Planning</h1><div class="sub">Savings targets and one-off planning budgets (house, wedding, projects…) — not tied to a month</div></div>
+    ${canE?`<button class="btn" id="btnAddGoal">+ Add</button>`:''}</div>
+  <div class="grid cols-3">
+    ${rows.length===0?`<div class="card"><div class="empty-state">Nothing yet</div></div>`:
+    rows.map(g=>{
+      const pct=Math.min(100,(Number(g.currentAmount)/(Number(g.targetAmount)||1))*100);
+      return `<div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div><div style="font-weight:600;font-size:14px;">${escapeHtml(g.name)}</div>
+          <span class="tag-chip ${g.account==='Business'?'business':'personal'}" style="margin-top:5px;display:inline-block;">${escapeHtml(g.account)}</span>
+          <span class="tag-chip" style="margin-top:5px;margin-left:4px;display:inline-block;">${g.kind||'Savings Goal'}</span></div>
+          ${canE?`<div class="row-actions"><button class="icon-btn" data-edit="goals:${g.id}">✎</button><button class="icon-btn" data-del="goals:${g.id}">✕</button></div>`:''}
+        </div>
+        <div style="margin:12px 0 6px;font-family:'IBM Plex Mono',monospace;font-size:13px;">${moneyIn(g.currentAmount, accountCurrency(g.account))} <span style="color:var(--ink-faint);">/ ${moneyIn(g.targetAmount, accountCurrency(g.account))}</span></div>
+        <div class="bar-track"><div class="bar-fill good" style="width:${pct}%;"></div></div>
+        <div class="stat-sub" style="margin-top:8px;">Target date: ${fmtDate(g.deadline)||'—'}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function goalModal(id){
+  const g=id?state.goals.find(x=>x.id===id):{name:'',account:accountNames()[0]||'',kind:'Savings Goal',targetAmount:'',currentAmount:'',deadline:'',notes:''};
+  editing={entity:'goals',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'}</h3>
+    <div class="field"><label>Name</label><input type="text" id="f_name" value="${escapeHtml(g.name)}" placeholder="e.g. Emergency Fund, House Construction"></div>
+    <div class="field-row">
+      <div class="field"><label>Kind</label><select id="f_kind">
+        <option ${g.kind==='Savings Goal'||!g.kind?'selected':''}>Savings Goal</option>
+        <option ${g.kind==='Planning Budget'?'selected':''}>Planning Budget</option>
+      </select></div>
+      <div class="field"><label>Account</label><select id="f_account">${accountOptionsHtml(g.account)}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Target date (optional for planning)</label><input type="date" id="f_deadline" value="${g.deadline?String(g.deadline).slice(0,10):''}"></div>
+      <div class="field"><label>Target amount</label><input type="number" step="0.01" id="f_targetAmount" value="${g.targetAmount}"></div>
+    </div>
+    <div class="field"><label>Current amount saved / committed</label><input type="number" step="0.01" id="f_currentAmount" value="${g.currentAmount}"></div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value="${escapeHtml(g.notes||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Investments ---------- */
+function renderInvestments(){
+  const rows = sortRows(state.investments,'investments','date'); const canE=canEdit();
+  const totalCost = rows.reduce((s,i)=>s+toBase(i.amountInvested, accountCurrency(i.account)),0);
+  const totalValue = rows.reduce((s,i)=>s+toBase(i.currentValue, accountCurrency(i.account)),0);
+  return `
+  <div class="page-head"><div><h1>Investments</h1><div class="sub">Cost basis ${money(totalCost)} · current value ${money(totalValue)} · ${totalValue-totalCost>=0?'+':''}${money(totalValue-totalCost)} (converted to ${state.settings.currency})</div></div>
+    ${canE?`<button class="btn" id="btnAddInvestment">+ Add investment</button>`:''}</div>
+  <table><thead><tr><th>Name</th><th>Type</th><th>Account</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current value</th><th style="text-align:right;">Gain/loss</th><th></th></tr></thead>
+  <tbody>
+    ${rows.length===0?`<tr><td colspan="7"><div class="empty-state">No investments yet</div></td></tr>`:
+    rows.map(i=>{
+      const ccy = accountCurrency(i.account);
+      const gain=Number(i.currentValue||0)-Number(i.amountInvested||0);
+      return `<tr><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.assetType||'')}</td>
+        <td><span class="tag-chip ${i.account==='Business'?'business':'personal'}">${escapeHtml(i.account)}</span></td>
+        <td class="amt" style="text-align:right;">${moneyIn(i.amountInvested, ccy)}</td>
+        <td class="amt" style="text-align:right;">${moneyIn(i.currentValue, ccy)}</td>
+        <td class="amt ${gain>=0?'pos':'neg'}" style="text-align:right;">${gain>=0?'+':''}${moneyIn(gain, ccy)}</td>
+        <td>${canE?`<div class="row-actions"><button class="icon-btn" data-edit="investments:${i.id}">✎</button><button class="icon-btn" data-del="investments:${i.id}">✕</button></div>`:''}</td></tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+function investmentModal(id){
+  const i=id?state.investments.find(x=>x.id===id):{name:'',account:accountNames()[0]||'',assetType:'',amountInvested:'',currentValue:'',date:new Date().toISOString().slice(0,10),notes:''};
+  editing={entity:'investments',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} investment</h3>
+    <div class="field"><label>Name</label><input type="text" id="f_name" value="${escapeHtml(i.name)}" placeholder="e.g. GSE Equity, T-Bill"></div>
+    <div class="field-row">
+      <div class="field"><label>Type</label><input type="text" id="f_assetType" value="${escapeHtml(i.assetType||'')}" placeholder="Stocks, bonds, property…"></div>
+      <div class="field"><label>Account</label><select id="f_account">${accountOptionsHtml(i.account)}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Amount invested</label><input type="number" step="0.01" id="f_amountInvested" value="${i.amountInvested}"></div>
+      <div class="field"><label>Current value</label><input type="number" step="0.01" id="f_currentValue" value="${i.currentValue}"></div>
+    </div>
+    <div class="field"><label>Date acquired</label><input type="date" id="f_date" value="${i.date?String(i.date).slice(0,10):''}"></div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value="${escapeHtml(i.notes||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Scale of Preference ---------- */
+function renderPreferences(){
+  const rows = [...state.preferences].sort((a,b)=>Number(a.rank)-Number(b.rank));
+  const budget = Number(state.settings.prefBudget)||0; const canE=canEdit();
+  let running = 0, cutoffInserted=false, html='';
+  rows.forEach(p=>{
+    const cost = Number(p.estimatedCost)||0; running += cost;
+    const funded = running <= budget;
+    if(!funded && !cutoffInserted && budget>0){ html += `<div class="pref-cutoff"><span>Budget line — ${money(budget)}</span></div>`; cutoffInserted = true; }
+    html += `<div class="pref-row">
+      <div class="pref-rank">${p.rank}</div>
+      <div style="flex:1;"><div style="font-weight:600;">${escapeHtml(p.item)} <span class="tag-chip" style="margin-left:6px;">${escapeHtml(p.category||'')}</span></div>
+      ${p.notes?`<div class="stat-sub">${escapeHtml(p.notes)}</div>`:''}</div>
+      <div class="amt" style="width:110px;text-align:right;">${money(cost)}</div>
+      <div class="pref-status ${budget>0 ? (funded?'funded':'deferred') : 'funded'}" style="width:80px;text-align:center;">${budget>0 ? (funded?'Funded':'Deferred') : '—'}</div>
+      ${canE?`<div class="row-actions"><button class="icon-btn" data-edit="preferences:${p.id}">✎</button><button class="icon-btn" data-del="preferences:${p.id}">✕</button></div>`:''}
+    </div>`;
+  });
+  return `
+  <div class="page-head"><div><h1>Scale of Preference</h1><div class="sub">Rank wants by priority against a limited budget</div></div>
+    ${canE?`<button class="btn" id="btnAddPreference">+ Add item</button>`:''}</div>
+  <div class="card" style="margin-bottom:16px;display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;">
+    <div class="field" style="margin-bottom:0;"><label>Available budget to allocate (${state.settings.currency})</label>
+      <input type="number" step="0.01" id="prefBudgetInput" value="${state.settings.prefBudget||''}" style="width:200px;" ${canE?'':'disabled'}></div>
+    ${canE?`<button class="btn secondary small" id="btnSavePrefBudget">Update budget</button>`:''}
+    <div class="stat-sub" style="margin-left:auto;">Rank 1 = highest priority. Items are funded top-down until the budget runs out.</div>
+  </div>
+  <div class="card" style="padding:0;">${rows.length===0?`<div class="empty-state">No preference items yet.</div>`:html}</div>`;
+}
+function preferenceModal(id){
+  const p = id?state.preferences.find(x=>x.id===id):{item:'',category:'Want',rank:(state.preferences.length+1),estimatedCost:'',notes:''};
+  editing={entity:'preferences',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} preference item</h3>
+    <div class="field"><label>Item</label><input type="text" id="f_item" value="${escapeHtml(p.item)}" placeholder="e.g. New laptop, School fees, Rent"></div>
+    <div class="field-row">
+      <div class="field"><label>Category</label><select id="f_category"><option ${p.category==='Need'?'selected':''}>Need</option><option ${p.category==='Want'?'selected':''}>Want</option></select></div>
+      <div class="field"><label>Rank (priority order)</label><input type="number" id="f_rank" value="${p.rank}"></div>
+    </div>
+    <div class="field"><label>Estimated cost (${state.settings.currency})</label><input type="number" step="0.01" id="f_estimatedCost" value="${p.estimatedCost}"></div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value="${escapeHtml(p.notes||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Accounts ---------- */
+function renderAccounts(){
+  const rows = state.accounts; const canE=canEdit();
+  return `
+  <div class="page-head"><div><h1>Accounts</h1><div class="sub">Unlimited wallets, bank accounts, or ledgers — each with its own currency</div></div>
+    ${canE?`<button class="btn" id="btnAddAccount">+ Add account</button>`:''}</div>
+  <table><thead><tr><th>Name</th><th>Type</th><th>Currency</th><th style="text-align:right;">Opening balance</th><th style="text-align:right;">Current balance</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    ${rows.length===0?`<tr><td colspan="7"><div class="empty-state">No accounts yet</div></td></tr>`:
+    rows.map(a=>{
+      const net = computeTotals(a.name).net + Number(a.openingBalance||0);
+      return `<tr><td>${escapeHtml(a.name)}</td><td>${escapeHtml(a.type)}</td><td>${escapeHtml(a.currency)}</td>
+        <td class="amt" style="text-align:right;">${moneyIn(a.openingBalance, a.currency)}</td>
+        <td class="amt ${net>=0?'pos':'neg'}" style="text-align:right;">${a.currency} ${net.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+        <td><span class="tag-chip">${escapeHtml(a.status||'Active')}</span></td>
+        <td>${canE?`<div class="row-actions"><button class="icon-btn" data-edit="accounts:${a.id}">✎</button><button class="icon-btn" data-del="accounts:${a.id}">✕</button></div>`:''}</td></tr>`;
+    }).join('')}
+  </tbody></table>
+  <div class="helptext" style="margin-top:12px;">Balances shown in each account's own currency. The Dashboard converts everything into your base currency (Settings) using the rates in Settings → Exchange Rates.</div>`;
+}
+function accountModal(id){
+  const a = id?state.accounts.find(x=>x.id===id):{name:'',type:'Personal',currency:state.settings.currency,openingBalance:0,status:'Active'};
+  editing={entity:'accounts',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} account</h3>
+    <div class="field"><label>Name</label><input type="text" id="f_name" value="${escapeHtml(a.name)}" placeholder="e.g. Cash Wallet, GCB Business, Mobile Money"></div>
+    <div class="field-row">
+      <div class="field"><label>Type</label><select id="f_type">
+        ${['Personal','Business','Family','Project','Savings','Investment','Other'].map(t=>`<option ${a.type===t?'selected':''}>${t}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Currency</label><input type="text" id="f_currency" value="${escapeHtml(a.currency||'GHS')}" placeholder="GHS, USD, EUR…" style="text-transform:uppercase;"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Opening balance</label><input type="number" step="0.01" id="f_openingBalance" value="${a.openingBalance||0}"></div>
+      <div class="field"><label>Status</label><select id="f_status"><option ${a.status==='Active'?'selected':''}>Active</option><option ${a.status==='Archived'?'selected':''}>Archived</option></select></div>
+    </div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Categories ---------- */
+function renderCategories(){
+  const canE=canEdit();
+  const income = state.categories.filter(c=>c.type==='Income');
+  const expense = state.categories.filter(c=>c.type==='Expense');
+  const chip = c => `<span class="tag-chip" style="margin:4px 6px 0 0;">${escapeHtml(c.name)}${canE?` <span data-del="categories:${c.id}" style="cursor:pointer;margin-left:4px;">✕</span>`:''}</span>`;
+  return `
+  <div class="page-head"><div><h1>Categories</h1><div class="sub">Default categories plus anything custom you add</div></div>
+    ${canE?`<button class="btn" id="btnAddCategory">+ Add category</button>`:''}</div>
+  <div class="section-title">Income</div>
+  <div class="card">${income.length===0?`<div class="empty-state">None yet</div>`:income.map(chip).join('')}</div>
+  <div class="section-title">Expense</div>
+  <div class="card">${expense.length===0?`<div class="empty-state">None yet</div>`:expense.map(chip).join('')}</div>`;
+}
+function categoryModal(id){
+  const c = id?state.categories.find(x=>x.id===id):{name:'',type:'Expense'};
+  editing={entity:'categories',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} category</h3>
+    <div class="field"><label>Name</label><input type="text" id="f_name" value="${escapeHtml(c.name)}"></div>
+    <div class="field"><label>Type</label><select id="f_type"><option ${c.type==='Income'?'selected':''}>Income</option><option ${c.type==='Expense'?'selected':''}>Expense</option></select></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Loans ---------- */
+function loanBalance(loan){
+  const paid = state.loanPayments.filter(p=>p.loanId===loan.id).reduce((s,p)=>s+Number(p.amount||0),0);
+  return Number(loan.principal||0) - paid;
+}
+function renderLoans(){
+  const rows = sortRows(state.loans,'loans','dueDate'); const canE=canEdit();
+  const totalOut = rows.filter(l=>l.direction==='Lent').reduce((s,l)=>s+loanBalance(l),0);
+  const totalOwe = rows.filter(l=>l.direction==='Borrowed').reduce((s,l)=>s+loanBalance(l),0);
+  return `
+  <div class="page-head"><div><h1>Loans</h1><div class="sub">Owed to you ${money(totalOut)} · You owe ${money(totalOwe)}</div></div>
+    ${canE?`<button class="btn" id="btnAddLoan">+ Add loan</button>`:''}</div>
+  <div class="grid cols-2">
+  ${rows.length===0?`<div class="card"><div class="empty-state">No loans recorded</div></div>`:
+  rows.map(l=>{
+    const bal = loanBalance(l);
+    const payments = state.loanPayments.filter(p=>p.loanId===l.id).sort((a,b)=>new Date(b.date)-new Date(a.date));
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div><div style="font-weight:600;">${escapeHtml(l.counterparty)}</div>
+        <span class="tag-chip ${l.direction==='Lent'?'editor':'business'}" style="margin-top:5px;display:inline-block;">${l.direction==='Lent'?'You lent':'You borrowed'}</span>
+        <span class="tag-chip" style="margin-top:5px;margin-left:4px;">${escapeHtml(l.status||'Active')}</span></div>
+        ${canE?`<div class="row-actions"><button class="icon-btn" data-edit="loans:${l.id}">✎</button><button class="icon-btn" data-del="loans:${l.id}">✕</button></div>`:''}
+      </div>
+      <div style="margin:12px 0 4px;font-family:'IBM Plex Mono',monospace;font-size:15px;">Outstanding: <b class="${bal>0?'neg':'pos'}">${l.currency||state.settings.currency} ${Number(bal).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></div>
+      <div class="stat-sub">Principal ${l.currency||''} ${Number(l.principal||0).toLocaleString()} · Interest ${l.interestRate||0}% · Due ${fmtDate(l.dueDate)||'—'}</div>
+      ${l.notes?`<div class="stat-sub" style="margin-top:4px;">${escapeHtml(l.notes)}</div>`:''}
+      <div class="divider" style="margin:12px 0;"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <span class="stat-label" style="margin:0;">Repayments</span>
+        ${canE?`<button class="btn secondary small" data-add-payment="${l.id}">+ Log payment</button>`:''}
+      </div>
+      ${payments.length===0?`<div class="stat-sub">None logged yet</div>`:payments.map(p=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--line);"><span>${fmtDate(p.date)} ${p.notes?'— '+escapeHtml(p.notes):''}</span><span class="amt pos">${money(p.amount)}</span></div>`).join('')}
+    </div>`;
+  }).join('')}
+  </div>`;
+}
+function loanModal(id){
+  const l = id?state.loans.find(x=>x.id===id):{direction:'Lent',counterparty:'',principal:'',currency:state.settings.currency,interestRate:0,startDate:new Date().toISOString().slice(0,10),dueDate:'',status:'Active',notes:''};
+  editing={entity:'loans',id};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>${id?'Edit':'Add'} loan</h3>
+    <div class="field-row">
+      <div class="field"><label>Direction</label><select id="f_direction"><option ${l.direction==='Lent'?'selected':''}>Lent</option><option ${l.direction==='Borrowed'?'selected':''}>Borrowed</option></select></div>
+      <div class="field"><label>Counterparty</label><input type="text" id="f_counterparty" value="${escapeHtml(l.counterparty)}" placeholder="Who?"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Principal</label><input type="number" step="0.01" id="f_principal" value="${l.principal}"></div>
+      <div class="field"><label>Currency</label><input type="text" id="f_currency" value="${escapeHtml(l.currency||state.settings.currency)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Interest rate (% flat, informational)</label><input type="number" step="0.01" id="f_interestRate" value="${l.interestRate||0}"></div>
+      <div class="field"><label>Status</label><select id="f_status"><option ${l.status==='Active'?'selected':''}>Active</option><option ${l.status==='Paid'?'selected':''}>Paid</option><option ${l.status==='Overdue'?'selected':''}>Overdue</option></select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Start date</label><input type="date" id="f_startDate" value="${l.startDate?String(l.startDate).slice(0,10):''}"></div>
+      <div class="field"><label>Due date</label><input type="date" id="f_dueDate" value="${l.dueDate?String(l.dueDate).slice(0,10):''}"></div>
+    </div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value="${escapeHtml(l.notes||'')}"></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+function loanPaymentModal(loanId){
+  editing={entity:'loanPayments',id:null};
+  document.getElementById('modalBody').innerHTML=`
+    <h3>Log repayment</h3>
+    <input type="hidden" id="f_loanId" value="${loanId}">
+    <div class="field-row">
+      <div class="field"><label>Date</label><input type="date" id="f_date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="field"><label>Amount</label><input type="number" step="0.01" id="f_amount" value=""></div>
+    </div>
+    <div class="field"><label>Notes</label><input type="text" id="f_notes" value=""></div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSave">Save</button></div>`;
+  openModal();
+}
+
+/* ---------- Insights (rule-based, not AI) ---------- */
+function monthTotal(type, monthsAgo){
+  const now=new Date(); const d=new Date(now.getFullYear(), now.getMonth()-monthsAgo, 1);
+  return state.transactions.filter(t=>{ const dt=new Date(t.date); return t.type===type && dt.getFullYear()===d.getFullYear() && dt.getMonth()===d.getMonth(); }).reduce((s,t)=>s+Number(t.amount||0),0);
+}
+function categoryMonthTotal(category, monthsAgo){
+  const now=new Date(); const d=new Date(now.getFullYear(), now.getMonth()-monthsAgo, 1);
+  return state.transactions.filter(t=>{ const dt=new Date(t.date); return t.type==='Expense' && t.category===category && dt.getFullYear()===d.getFullYear() && dt.getMonth()===d.getMonth(); }).reduce((s,t)=>s+Number(t.amount||0),0);
+}
+function computeInsights(){
+  const insights = [];
+  const thisM = monthTotal('Expense',0), lastM = monthTotal('Expense',1);
+  if(lastM>0){
+    const pct = ((thisM-lastM)/lastM)*100;
+    if(Math.abs(pct)>=5) insights.push(`Overall spending is ${pct>0?'up':'down'} ${Math.abs(pct).toFixed(0)}% this month vs last month (${money(thisM)} vs ${money(lastM)}).`);
+  }
+  const cats = [...new Set(state.transactions.filter(t=>t.type==='Expense').map(t=>t.category))];
+  cats.forEach(cat=>{
+    const m0=categoryMonthTotal(cat,0), m1=categoryMonthTotal(cat,1), m2=categoryMonthTotal(cat,2);
+    if(m1>0){ const pct=((m0-m1)/m1)*100; if(pct>=20) insights.push(`${cat||'Uncategorized'} spending rose ${pct.toFixed(0)}% this month (${money(m0)} vs ${money(m1)}).`); }
+    if(m0>0 && m1>0 && m2>0 && m0>m1 && m1>m2) insights.push(`${cat||'Uncategorized'} expenses have risen for three straight months.`);
+  });
+  state.budgets.forEach(b=>{
+    const spent = state.transactions.filter(t=>t.type==='Expense'&&t.category===b.category&&t.account===b.account&&isThisMonth(t.date)).reduce((s,t)=>s+Number(t.amount||0),0);
+    const limit = Number(b.monthlyLimit)||0;
+    if(limit>0 && spent>=limit) insights.push(`You've exceeded your ${b.category} budget for ${b.account} (${money(spent)} of ${money(limit)}).`);
+    else if(limit>0 && spent/limit>=0.85) insights.push(`You're at ${Math.round(spent/limit*100)}% of your ${b.category} budget for ${b.account}.`);
+  });
+  state.goals.forEach(g=>{
+    const remaining = Number(g.targetAmount||0)-Number(g.currentAmount||0);
+    if(remaining<=0) return;
+    if(g.deadline){
+      const days = Math.ceil((new Date(g.deadline)-new Date())/86400000);
+      if(days>0 && days<=30) insights.push(`"${g.name}" is due in ${days} day${days!==1?'s':''} — ${money(remaining)} still needed.`);
+    }
+  });
+  state.loans.forEach(l=>{
+    if(l.status==='Paid') return;
+    const bal = loanBalance(l);
+    if(bal<=0) return;
+    if(l.dueDate){
+      const days = Math.ceil((new Date(l.dueDate)-new Date())/86400000);
+      if(days<=14) insights.push(`Loan ${l.direction==='Lent'?'to':'from'} ${l.counterparty} ${days<0?'is overdue':'is due in '+days+' day(s)'} — ${money(bal)} outstanding.`);
+    }
+  });
+  const todayHasTx = state.transactions.some(t=>t.date===new Date().toISOString().slice(0,10));
+  if(!todayHasTx) insights.push(`No transaction logged today yet.`);
+  return insights;
+}
+function renderInsights(){
+  const insights = computeInsights();
+  return `
+  <div class="page-head"><div><h1>Insights</h1><div class="sub">Simple rule-based analysis of your own data — not an AI model, just arithmetic on your numbers</div></div></div>
+  <div class="card">
+    ${insights.length===0?`<div class="empty-state">Nothing notable right now — add more transactions to see trends.</div>`:
+      insights.map(i=>`<div style="padding:11px 0;border-bottom:1px solid var(--line);font-size:13.5px;">💡 ${escapeHtml(i)}</div>`).join('')}
+  </div>`;
+}
+
+/* ---------- Reports ---------- */
+let reportRange = {from:'', to:''};
+function renderReports(){
+  const from = reportRange.from ? new Date(reportRange.from) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const to = reportRange.to ? new Date(reportRange.to) : new Date();
+  const inRange = t=>{ const d=new Date(t.date); return d>=from && d<=to; };
+  const txs = state.transactions.filter(inRange);
+  const income = txs.filter(t=>t.type==='Income').reduce((s,t)=>s+Number(t.amount||0),0);
+  const expense = txs.filter(t=>t.type==='Expense').reduce((s,t)=>s+Number(t.amount||0),0);
+  const byCategory = {};
+  txs.filter(t=>t.type==='Expense').forEach(t=>{ byCategory[t.category||'Uncategorized']=(byCategory[t.category||'Uncategorized']||0)+Number(t.amount||0); });
+  const catRows = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
+
+  return `
+  <div class="page-head"><div><h1>Reports</h1><div class="sub">Income statement &amp; cash flow for a date range</div></div>
+    <div style="display:flex;gap:8px;"><button class="btn secondary small" id="btnPrintReport">Print / Save as PDF</button></div>
+  </div>
+  <div class="toolbar">
+    <div class="field" style="margin-bottom:0;"><label>From</label><input type="date" id="repFrom" value="${reportRange.from||from.toISOString().slice(0,10)}"></div>
+    <div class="field" style="margin-bottom:0;"><label>To</label><input type="date" id="repTo" value="${reportRange.to||to.toISOString().slice(0,10)}"></div>
+    <button class="btn secondary small" id="btnApplyReportRange" style="align-self:flex-end;">Apply</button>
+  </div>
+  <div id="reportPrintArea">
+    <div class="grid cols-3">
+      <div class="card"><div class="stat-label">Income</div><div class="stat-value pos">${money(income)}</div></div>
+      <div class="card"><div class="stat-label">Expense</div><div class="stat-value neg">${money(expense)}</div></div>
+      <div class="card"><div class="stat-label">Net cash flow</div><div class="stat-value ${income-expense>=0?'pos':'neg'}">${money(income-expense)}</div></div>
+    </div>
+    <div class="section-title">Expense by category</div>
+    <table><thead><tr><th>Category</th><th style="text-align:right;">Amount</th><th style="text-align:right;">% of total</th></tr></thead>
+    <tbody>
+      ${catRows.length===0?`<tr><td colspan="3"><div class="empty-state">No expenses in range</div></td></tr>`:
+      catRows.map(([cat,amt])=>`<tr><td>${escapeHtml(cat)}</td><td class="amt" style="text-align:right;">${money(amt)}</td><td style="text-align:right;">${expense>0?((amt/expense)*100).toFixed(1):'0.0'}%</td></tr>`).join('')}
+    </tbody></table>
+  </div>`;
+}
+
+/* ---------- People (Owner only) ---------- */
+function renderPeople(){
+  return `
+  <div class="page-head"><div><h1>People</h1><div class="sub">Invite others into this shared workspace and manage their access</div></div>
+    <button class="btn" id="btnInvite">+ Invite someone</button></div>
+  <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last seen</th><th></th></tr></thead>
+  <tbody>
+    ${state.users.length===0?`<tr><td colspan="5"><div class="empty-state">Just you so far.</div></td></tr>`:
+    state.users.map(u=>`<tr>
+      <td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.email)}</td>
+      <td><span class="tag-chip ${u.role.toLowerCase()}">${u.role}</span></td>
+      <td>${u.lastSeen?timeAgo(u.lastSeen):'Never'}</td>
+      <td>${u.email===auth.email?'':`<div class="row-actions">
+        <select data-role-change="${u.email}" style="font-size:11.5px;padding:5px 7px;">
+          <option value="Viewer" ${u.role==='Viewer'?'selected':''}>Viewer</option>
+          <option value="Editor" ${u.role==='Editor'?'selected':''}>Editor</option>
+          <option value="Owner" ${u.role==='Owner'?'selected':''}>Owner</option>
+        </select>
+        <button class="icon-btn" data-remove-user="${u.email}">✕</button>
+      </div>`}</td>
+    </tr>`).join('')}
+  </tbody></table>
+  <div class="helptext" style="margin-top:12px;">Viewers can see everything but can't add or edit. Editors can manage transactions, budgets, goals, investments, and preferences. Owners can additionally invite people and change roles.</div>
+  <div class="section-title">Recent activity</div>
+  <div class="card">
+    ${state.log.length===0?`<div class="empty-state">No activity logged yet</div>`:
+    state.log.slice(0,25).map(l=>`<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px;">
+      <span><b>${escapeHtml(l.email)}</b> — ${escapeHtml(l.action)}${l.detail?': '+escapeHtml(l.detail):''}</span>
+      <span style="color:var(--ink-faint);white-space:nowrap;">${timeAgo(l.timestamp)}</span>
+    </div>`).join('')}
+  </div>`;
+}
+function inviteModal(){
+  document.getElementById('modalBody').innerHTML=`
+    <h3>Invite someone</h3>
+    <div class="field"><label>Name</label><input type="text" id="inv_name"></div>
+    <div class="field"><label>Email</label><input type="text" id="inv_email"></div>
+    <div class="field"><label>Role</label><select id="inv_role"><option value="Viewer">Viewer — can see, not edit</option><option value="Editor">Editor — can add and edit</option></select></div>
+    <div class="helptext">They'll get an email with their own access code and, if the app is hosted, a direct link to log straight in.</div>
+    <div class="modal-actions"><button class="btn secondary" id="modalCancel">Cancel</button><button class="btn" id="modalSendInvite">Send invite</button></div>`;
+  openModal();
+}
+
+/* ---------- Settings ---------- */
+function renderSettings(){
+  const s = state.settings;
+  return `
+  <div class="page-head"><div><h1>Settings</h1><div class="sub">Preferences and backups</div></div></div>
+  <div class="settings-block">
+    <div class="section-title">Sync</div>
+    <div class="card">
+      <div class="field" style="margin-bottom:0;"><label><input type="checkbox" id="s_autoSync" ${s.autoSync?'checked':''} style="width:auto;margin-right:6px;">Auto-sync to Sheets after every change</label></div>
+    </div>
+    <div class="divider"></div>
+    <div class="section-title">Appearance</div>
+    <div class="card">
+      <div class="field" style="margin-bottom:0;"><label><input type="checkbox" id="s_darkMode" ${s.darkMode?'checked':''} style="width:auto;margin-right:6px;">Dark mode</label></div>
+    </div>
+    <div class="divider"></div>
+    <div class="section-title">Base currency &amp; exchange rates</div>
+    <div class="card">
+      <div class="field"><label>Base currency (used for Dashboard totals across accounts)</label>
+        <select id="s_currency">
+          <option value="GHS" ${s.currency==='GHS'?'selected':''}>GHS — Ghana Cedi (₵)</option>
+          <option value="USD" ${s.currency==='USD'?'selected':''}>USD — US Dollar ($)</option>
+          <option value="EUR" ${s.currency==='EUR'?'selected':''}>EUR — Euro (€)</option>
+          <option value="NGN" ${s.currency==='NGN'?'selected':''}>NGN — Nigerian Naira (₦)</option>
+          <option value="GBP" ${s.currency==='GBP'?'selected':''}>GBP — British Pound (£)</option>
+        </select></div>
+      <div class="helptext" style="margin-bottom:12px;">${s.ratesFetchedAt?('Rates last fetched '+timeAgo(s.ratesFetchedAt)+'.'):'No live rates fetched yet — conversions fall back to face value until you fetch or enter rates.'}</div>
+      <button class="btn secondary small" id="btnFetchRates">Fetch live rates</button>
+      ${state.exchangeRates.length>0?`<table style="margin-top:12px;"><thead><tr><th>From</th><th>To</th><th style="text-align:right;">Rate</th><th></th></tr></thead>
+        <tbody>${state.exchangeRates.map(r=>`<tr><td>${escapeHtml(r.fromCurrency)}</td><td>${escapeHtml(r.toCurrency)}</td><td style="text-align:right;" class="amt">${r.rate}</td>
+          <td>${canEdit()?`<button class="icon-btn" data-del="exchangeRates:${r.id}">✕</button>`:''}</td></tr>`).join('')}</tbody></table>`:''}
+    </div>
+    <div class="divider"></div>
+    <div class="section-title">Device lock</div>
+    <div class="card">
+      <div class="helptext" style="margin-top:0;margin-bottom:12px;">Adds a PIN screen before the app opens on this device. This is a convenience lock, not encryption — anyone with your login can still sign in on another device.</div>
+      ${s.pinHash?`<button class="btn secondary small" id="btnDisablePin">Turn off PIN lock</button>`:`<button class="btn secondary small" id="btnEnablePin">Set up PIN lock</button>`}
+    </div>
+    <div class="divider"></div>
+    <div class="section-title">Export data</div>
+    <div class="card">
+      <div class="helptext" style="margin-top:0;margin-bottom:12px;">Export everything to a single .xlsx workbook, or individual CSVs — works without Google, useful as an offline backup or for an accountant.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn secondary small" id="btnExportXlsx">Export .xlsx backup</button>
+        ${canEdit()?`<button class="btn secondary small" id="btnImportXlsxTrigger">Import .xlsx backup</button><input type="file" id="importXlsxFile" accept=".xlsx" style="display:none;">`:''}
+        <button class="btn secondary small" data-export-csv="accounts">Accounts CSV</button>
+        <button class="btn secondary small" data-export-csv="loans">Loans CSV</button>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="section-title">Local data</div>
+    <div class="card">
+      <div class="helptext" style="margin-top:0;margin-bottom:12px;">This device caches everything offline. Signing out keeps the cache; erasing clears it (your Google Sheet is unaffected).</div>
+      <button class="btn danger small" id="btnResetAll">Erase local cache</button>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   MODAL PLUMBING
+========================================================= */
+function openModal(){ document.getElementById('overlay').classList.add('open'); }
+function closeModal(){ document.getElementById('overlay').classList.remove('open'); editing=null; }
+function collectForm(entity){
+  const map = {
+    transactions:['date','type','account','category','amount','description','tags','recurring'],
+    budgets:['category','account','monthlyLimit','notes'],
+    goals:['name','account','kind','targetAmount','currentAmount','deadline','notes'],
+    investments:['name','assetType','account','amountInvested','currentValue','date','notes'],
+    preferences:['item','category','rank','estimatedCost','notes'],
+    accounts:['name','type','currency','openingBalance','status'],
+    categories:['name','type'],
+    loans:['direction','counterparty','principal','currency','interestRate','startDate','dueDate','status','notes'],
+    loanPayments:['loanId','date','amount','notes']
+  };
+  const obj={}; map[entity].forEach(k=>{ const el=document.getElementById('f_'+k); if(el) obj[k]=el.value; }); return obj;
+}
+function addInterval(dateStr, unit){
+  const d = new Date(dateStr);
+  if(unit==='Weekly') d.setDate(d.getDate()+7);
+  else if(unit==='Monthly') d.setMonth(d.getMonth()+1);
+  else if(unit==='Yearly') d.setFullYear(d.getFullYear()+1);
+  return d.toISOString().slice(0,10);
+}
+function saveModal(){
+  const {entity,id} = editing;
+  const data = collectForm(entity);
+  if(entity==='transactions' && data.recurring){ data.nextDueDate = addInterval(data.date, data.recurring); }
+  if(id){ const list = state[entity]; const idx = list.findIndex(x=>x.id===id); list[idx] = Object.assign({}, list[idx], data); }
+  else{ data.id = uid(); data.createdAt = new Date().toISOString(); state[entity].push(data); }
+  saveState(); closeModal(); render(); toast('Saved');
+}
+function processRecurringTransactions(){
+  const today = new Date().toISOString().slice(0,10);
+  let generated = 0;
+  state.transactions.slice().forEach(t=>{
+    if(t.recurring && t.nextDueDate && t.nextDueDate <= today){
+      const copy = Object.assign({}, t, { id: uid(), date: t.nextDueDate, createdAt: new Date().toISOString() });
+      copy.nextDueDate = addInterval(copy.date, copy.recurring);
+      state.transactions.push(copy);
+      const orig = state.transactions.find(x=>x.id===t.id);
+      if(orig) orig.nextDueDate = copy.nextDueDate;
+      generated++;
+    }
+  });
+  if(generated>0){ saveState(); toast(generated+' recurring transaction'+(generated>1?'s':'')+' added'); }
+}
+
+/* =========================================================
+   EVENT WIRING
+========================================================= */
+function attachHandlers(){
+  document.querySelectorAll('th[data-sort]').forEach(th=>{ th.onclick = ()=> setSort(currentTab, th.dataset.sort, 1); });
+
+  const btnAddTx=document.getElementById('btnAddTx'); if(btnAddTx) btnAddTx.onclick=()=>txModal(null);
+  const txSearch=document.getElementById('txSearch'); if(txSearch) txSearch.oninput=(e)=>{txFilters.q=e.target.value; render();};
+  const txAcc=document.getElementById('txAccountFilter'); if(txAcc) txAcc.onchange=(e)=>{txFilters.account=e.target.value; render();};
+  const txType=document.getElementById('txTypeFilter'); if(txType) txType.onchange=(e)=>{txFilters.type=e.target.value; render();};
+  const btnExportTxCsv=document.getElementById('btnExportTxCsv'); if(btnExportTxCsv) btnExportTxCsv.onclick=()=>exportCsv('transactions.csv', state.transactions);
+  const txSelectAll=document.getElementById('txSelectAll');
+  const bulkBtn=document.getElementById('btnBulkDelete');
+  function refreshBulkBtn(){
+    if(!bulkBtn) return;
+    const checked = document.querySelectorAll('.txRowSelect:checked').length;
+    bulkBtn.style.display = checked>0 ? 'inline-block' : 'none';
+    bulkBtn.textContent = 'Delete selected ('+checked+')';
+  }
+  if(txSelectAll) txSelectAll.onchange=(e)=>{ document.querySelectorAll('.txRowSelect').forEach(cb=>cb.checked=e.target.checked); refreshBulkBtn(); };
+  document.querySelectorAll('.txRowSelect').forEach(cb=>{ cb.onchange=refreshBulkBtn; });
+  if(bulkBtn) bulkBtn.onclick=()=>{
+    const ids = Array.from(document.querySelectorAll('.txRowSelect:checked')).map(cb=>cb.value);
+    if(ids.length===0) return;
+    if(!confirm('Delete '+ids.length+' selected transaction(s)? This cannot be undone.')) return;
+    state.transactions = state.transactions.filter(t=>!ids.includes(t.id));
+    saveState(); render(); toast('Deleted '+ids.length+' transactions');
+  };
+
+  const btnAddBudget=document.getElementById('btnAddBudget'); if(btnAddBudget) btnAddBudget.onclick=()=>budgetModal(null);
+  const btnAddGoal=document.getElementById('btnAddGoal'); if(btnAddGoal) btnAddGoal.onclick=()=>goalModal(null);
+  const btnAddInvestment=document.getElementById('btnAddInvestment'); if(btnAddInvestment) btnAddInvestment.onclick=()=>investmentModal(null);
+  const btnAddPreference=document.getElementById('btnAddPreference'); if(btnAddPreference) btnAddPreference.onclick=()=>preferenceModal(null);
+  const btnSavePrefBudget=document.getElementById('btnSavePrefBudget');
+  if(btnSavePrefBudget) btnSavePrefBudget.onclick=()=>{ state.settings.prefBudget = document.getElementById('prefBudgetInput').value; saveState(); render(); toast('Budget updated'); };
+
+  document.querySelectorAll('[data-edit]').forEach(btn=>{
+    btn.onclick=()=>{ const [entity,id]=btn.dataset.edit.split(':');
+      if(entity==='transactions') txModal(id); else if(entity==='budgets') budgetModal(id);
+      else if(entity==='goals') goalModal(id); else if(entity==='investments') investmentModal(id);
+      else if(entity==='preferences') preferenceModal(id);
+      else if(entity==='accounts') accountModal(id); else if(entity==='categories') categoryModal(id);
+      else if(entity==='loans') loanModal(id); };
+  });
+  document.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.onclick=()=>{ const [entity,id]=btn.dataset.del.split(':');
+      if(!confirm('Delete this entry? This cannot be undone.')) return;
+      if(entity==='loans') state.loanPayments = state.loanPayments.filter(p=>p.loanId!==id);
+      state[entity]=state[entity].filter(x=>x.id!==id); saveState(); render(); toast('Deleted'); };
+  });
+  const btnAddAccount=document.getElementById('btnAddAccount'); if(btnAddAccount) btnAddAccount.onclick=()=>accountModal(null);
+  const btnAddCategory=document.getElementById('btnAddCategory'); if(btnAddCategory) btnAddCategory.onclick=()=>categoryModal(null);
+  const btnAddLoan=document.getElementById('btnAddLoan'); if(btnAddLoan) btnAddLoan.onclick=()=>loanModal(null);
+  document.querySelectorAll('[data-add-payment]').forEach(btn=>{ btn.onclick=()=>loanPaymentModal(btn.dataset.addPayment); });
+  document.querySelectorAll('[data-export-csv]').forEach(btn=>{ btn.onclick=()=>exportCsv(btn.dataset.exportCsv+'.csv', state[btn.dataset.exportCsv]); });
+  const btnApplyReportRange=document.getElementById('btnApplyReportRange');
+  if(btnApplyReportRange) btnApplyReportRange.onclick=()=>{ reportRange.from=document.getElementById('repFrom').value; reportRange.to=document.getElementById('repTo').value; render(); };
+  const btnPrintReport=document.getElementById('btnPrintReport'); if(btnPrintReport) btnPrintReport.onclick=()=>window.print();
+  const modalCancel=document.getElementById('modalCancel'); if(modalCancel) modalCancel.onclick=closeModal;
+  const modalSave=document.getElementById('modalSave'); if(modalSave) modalSave.onclick=saveModal;
+  const btnSyncNow=document.getElementById('btnSyncNow'); if(btnSyncNow) btnSyncNow.onclick=()=>pushThenPull();
+
+  // People
+  const btnInvite=document.getElementById('btnInvite'); if(btnInvite) btnInvite.onclick=inviteModal;
+  const modalSendInvite=document.getElementById('modalSendInvite');
+  if(modalSendInvite) modalSendInvite.onclick=sendInvite;
+  document.querySelectorAll('[data-role-change]').forEach(sel=>{
+    sel.onchange=()=>changeRole(sel.dataset.roleChange, sel.value);
+  });
+  document.querySelectorAll('[data-remove-user]').forEach(btn=>{
+    btn.onclick=()=>{ if(confirm('Remove this person\'s access?')) removeUser(btn.dataset.removeUser); };
+  });
+
+  // Settings
+  const s_autoSync=document.getElementById('s_autoSync'); if(s_autoSync) s_autoSync.onchange=(e)=>{state.settings.autoSync=e.target.checked; saveState();};
+  const s_currency=document.getElementById('s_currency'); if(s_currency) s_currency.onchange=(e)=>{state.settings.currency=e.target.value; saveState(); render();};
+  const s_darkMode=document.getElementById('s_darkMode'); if(s_darkMode) s_darkMode.onchange=(e)=>{state.settings.darkMode=e.target.checked; saveState(); applyTheme();};
+  const btnFetchRates=document.getElementById('btnFetchRates'); if(btnFetchRates) btnFetchRates.onclick=fetchLiveRates;
+  const btnEnablePin=document.getElementById('btnEnablePin'); if(btnEnablePin) btnEnablePin.onclick=setupPin;
+  const btnDisablePin=document.getElementById('btnDisablePin'); if(btnDisablePin) btnDisablePin.onclick=()=>{ state.settings.pinHash=''; saveState(); render(); toast('PIN lock turned off'); };
+  const btnExportXlsx=document.getElementById('btnExportXlsx'); if(btnExportXlsx) btnExportXlsx.onclick=exportXlsx;
+  const btnImportXlsxTrigger=document.getElementById('btnImportXlsxTrigger');
+  const importXlsxFile=document.getElementById('importXlsxFile');
+  if(btnImportXlsxTrigger) btnImportXlsxTrigger.onclick=()=>importXlsxFile.click();
+  if(importXlsxFile) importXlsxFile.onchange=importXlsx;
+  const btnResetAll=document.getElementById('btnResetAll');
+  if(btnResetAll) btnResetAll.onclick=()=>{
+    if(!confirm('Erase locally cached data on this device? Your Google Sheet is unaffected.')) return;
+    const keepSettings = state.settings;
+    state = structuredClone(DEFAULT_STATE); state.settings = keepSettings;
+    saveState(); render(); toast('Local cache erased');
+  };
+}
+
+/* =========================================================
+   GOOGLE SHEETS SYNC
+========================================================= */
+async function pullFromSheet(silent){
+  if(!auth) return;
+  try{
+    const u = new URL(auth.url);
+    u.searchParams.set('email', auth.email); u.searchParams.set('code', auth.code);
+    const res = await fetch(u.toString());
+    const json = await res.json();
+    if(!json.ok){ if(!silent) toast('Sync failed: '+json.error); return; }
+    ['transactions','budgets','goals','investments','preferences','accounts','categories','loans','loanPayments','exchangeRates'].forEach(k=>{ if(json.data[k]) state[k]=json.data[k]; });
+    if(json.users) state.users = json.users;
+    if(json.log) state.log = json.log;
+    auth.role = json.role; saveAuth();
+    state.lastSynced = new Date().toISOString();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    render();
+    if(!silent) toast('Pulled latest data');
+  }catch(e){ if(!silent) toast('Could not reach the Sheet'); }
+}
+async function pushToSheet(silent){
+  if(!auth || !canEdit()) return;
+  try{
+    const payload = { email:auth.email, code:auth.code, action:'sync',
+      data:{ transactions:state.transactions, budgets:state.budgets, goals:state.goals, investments:state.investments, preferences:state.preferences,
+             accounts:state.accounts, categories:state.categories, loans:state.loans, loanPayments:state.loanPayments, exchangeRates:state.exchangeRates } };
+    const res = await fetch(auth.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload) });
+    const json = await res.json();
+    if(!json.ok){ if(!silent) toast('Push failed: '+json.error); return; }
+    state.lastSynced = new Date().toISOString();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    updateSyncPill();
+    if(!silent) toast('Pushed to Google Sheet');
+  }catch(e){ if(!silent) toast('Could not reach the Sheet'); }
+}
+async function pushThenPull(){ await pushToSheet(true); await pullFromSheet(false); }
+
+async function sendInvite(){
+  const name = document.getElementById('inv_name').value.trim();
+  const email = document.getElementById('inv_email').value.trim();
+  const role = document.getElementById('inv_role').value;
+  if(!email){ toast('Enter an email'); return; }
+  try{
+    const payload = { email:auth.email, code:auth.code, action:'invite', inviteeName:name, inviteeEmail:email, role };
+    const res = await fetch(auth.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload) });
+    const json = await res.json();
+    if(!json.ok){ toast('Invite failed: '+json.error); return; }
+    closeModal(); toast('Invite sent to '+email);
+    pullFromSheet(true);
+  }catch(e){ toast('Invite failed — check connection'); }
+}
+async function changeRole(targetEmail, newRole){
+  try{
+    const payload = { email:auth.email, code:auth.code, action:'updateRole', targetEmail, newRole };
+    const res = await fetch(auth.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload) });
+    const json = await res.json();
+    if(!json.ok){ toast('Failed: '+json.error); return; }
+    toast('Role updated'); pullFromSheet(true);
+  }catch(e){ toast('Failed — check connection'); }
+}
+async function removeUser(targetEmail){
+  try{
+    const payload = { email:auth.email, code:auth.code, action:'removeUser', targetEmail };
+    const res = await fetch(auth.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload) });
+    const json = await res.json();
+    if(!json.ok){ toast('Failed: '+json.error); return; }
+    toast('Access removed'); pullFromSheet(true);
+  }catch(e){ toast('Failed — check connection'); }
+}
+
+/* =========================================================
+   EXCEL BACKUP (offline, via SheetJS)
+========================================================= */
+function exportCsv(filename, rows){
+  if(!rows || rows.length===0){ toast('Nothing to export'); return; }
+  const headers = Object.keys(rows[0]);
+  const escCsv = (v)=>{ const s=String(v??''); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv = [headers.join(',')].concat(rows.map(r=>headers.map(h=>escCsv(r[h])).join(','))).join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function exportXlsx(){
+  const wb = XLSX.utils.book_new();
+  ['transactions','budgets','goals','investments','preferences'].forEach(k=>{
+    const ws = XLSX.utils.json_to_sheet(state[k]);
+    XLSX.utils.book_append_sheet(wb, ws, k.charAt(0).toUpperCase()+k.slice(1));
+  });
+  XLSX.writeFile(wb, 'ledger-finance-backup-'+new Date().toISOString().slice(0,10)+'.xlsx');
+  toast('Backup exported');
+}
+function importXlsx(e){
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt)=>{
+    try{
+      const wb = XLSX.read(evt.target.result, {type:'array'});
+      ['transactions','budgets','goals','investments','preferences'].forEach(k=>{
+        const sheetName = k.charAt(0).toUpperCase()+k.slice(1);
+        if(wb.Sheets[sheetName]){ const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]); state[k] = rows.map(r=>({...r, id: r.id?String(r.id):uid()})); }
+      });
+      saveState(); render(); toast('Backup imported');
+    }catch(err){ toast('Import failed — check the file'); }
+  };
+  reader.readAsArrayBuffer(file); e.target.value='';
+}
+
+/* =========================================================
+   THEME
+========================================================= */
+function applyTheme(){ document.body.setAttribute('data-theme', state.settings.darkMode ? 'dark' : 'light'); }
+
+/* =========================================================
+   LIVE EXCHANGE RATES
+========================================================= */
+async function fetchLiveRates(){
+  if(!auth) return;
+  try{
+    const u = new URL(auth.url);
+    u.searchParams.set('email', auth.email); u.searchParams.set('code', auth.code);
+    u.searchParams.set('action','rates'); u.searchParams.set('base', state.settings.currency);
+    const res = await fetch(u.toString());
+    const json = await res.json();
+    if(!json.ok){ toast('Could not fetch rates: '+json.error); return; }
+    const wantedCurrencies = new Set(state.accounts.map(a=>a.currency).concat([state.settings.currency]));
+    wantedCurrencies.forEach(ccy=>{
+      if(ccy===state.settings.currency || !json.rates[ccy]) return;
+      // json.rates[ccy] = units of ccy per 1 base; we store rate as ccy -> base
+      const rate = 1/json.rates[ccy];
+      const existingIdx = state.exchangeRates.findIndex(r=>r.fromCurrency===ccy && r.toCurrency===state.settings.currency);
+      const row = { id: existingIdx>=0?state.exchangeRates[existingIdx].id:uid(), fromCurrency:ccy, toCurrency:state.settings.currency, rate, updatedAt:new Date().toISOString() };
+      if(existingIdx>=0) state.exchangeRates[existingIdx]=row; else state.exchangeRates.push(row);
+    });
+    state.settings.ratesFetchedAt = new Date().toISOString();
+    saveState(); render(); toast('Exchange rates updated');
+  }catch(e){ toast('Could not reach the rate service'); }
+}
+
+/* =========================================================
+   PIN LOCK (device convenience lock, not encryption)
+========================================================= */
+let pinUnlockedThisSession = false;
+let pinBuffer = '';
+async function sha256Hex(text){
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function setupPin(){
+  const pin = prompt('Choose a 4-6 digit PIN for this device:');
+  if(!pin || !/^\d{4,6}$/.test(pin)){ if(pin!==null) toast('PIN must be 4-6 digits'); return; }
+  state.settings.pinHash = await sha256Hex(pin);
+  saveState(); render(); toast('PIN lock enabled');
+}
+function pinLockScreenHtml(){
+  return `<div class="pin-wrap"><div class="pin-card">
+    <div class="mark" style="font-family:'Fraunces',serif;font-weight:700;font-size:20px;color:var(--ink);margin-bottom:4px;">Enter PIN</div>
+    <div class="pin-dots" id="pinDots">${[0,1,2,3].map(()=>'<div class="pin-dot"></div>').join('')}</div>
+    <div class="pin-pad">
+      ${[1,2,3,4,5,6,7,8,9].map(n=>`<button class="pin-key" data-pin="${n}">${n}</button>`).join('')}
+      <button class="pin-key" data-pin="clear">Clear</button>
+      <button class="pin-key" data-pin="0">0</button>
+      <button class="pin-key" data-pin="back">⌫</button>
+    </div>
+  </div></div>`;
+}
+async function checkPinBuffer(){
+  const hash = await sha256Hex(pinBuffer);
+  if(hash === state.settings.pinHash){ pinUnlockedThisSession = true; renderRoot(); }
+  else{ pinBuffer=''; renderPinDots(); toast('Incorrect PIN'); }
+}
+function renderPinDots(){
+  const dots = document.querySelectorAll('#pinDots .pin-dot');
+  dots.forEach((d,i)=> d.classList.toggle('filled', i<pinBuffer.length));
+}
+function attachPinHandlers(){
+  document.querySelectorAll('[data-pin]').forEach(btn=>{
+    btn.onclick=()=>{
+      const v = btn.dataset.pin;
+      if(v==='clear') pinBuffer='';
+      else if(v==='back') pinBuffer=pinBuffer.slice(0,-1);
+      else if(pinBuffer.length<6) pinBuffer+=v;
+      renderPinDots();
+      if(pinBuffer.length>=4) checkPinBuffer();
+    };
+  });
+}
+
+/* =========================================================
+   PWA REGISTRATION + LIVE-ISH SYNC
+========================================================= */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+}
+window.addEventListener('online', ()=>{ if(auth) pushThenPull(); });
+setInterval(()=>{ if(auth && document.visibilityState==='visible') pullFromSheet(true); }, 45000);
+window.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeModal(); });
+document.getElementById('overlay').addEventListener('click',(e)=>{ if(e.target.id==='overlay') closeModal(); });
+
+bootstrap();
+</script>
+</body>
+</html>
