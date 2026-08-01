@@ -35,7 +35,13 @@ self.addEventListener('fetch', (event) => {
   if (isSameOrigin && (isShellFile || event.request.mode === 'navigate')) {
     event.respondWith(
       fetch(event.request).then((res) => {
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, res.clone()));
+        // Clone synchronously, right here — before any async work (like
+        // caches.open, which is a real async IndexedDB round-trip) gets a
+        // chance to run. Otherwise the browser can start reading the
+        // original response body first, and clone() then fails with
+        // "Response body is already used."
+        const resToCache = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, resToCache)).catch(()=>{});
         return res;
       }).catch(() => caches.match(event.request))
     );
