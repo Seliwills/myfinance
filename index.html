@@ -213,22 +213,24 @@ tr.row-hover:hover{background:var(--surface-2);}
 /* =====================================================================
    THE LEDGER — Frontend
    Single-file PWA. Vanilla JS, no framework/build step.
+   Architecture: Workspace (Personal/Business/Family/…) -> Wallet (Cash/
+   Bank/MoMo/…) -> Transactions/Budgets/Goals/Loans/Investments.
    State: local-first. Every mutation writes to localStorage immediately,
    then queues a background push to the Apps Script backend (debounced
    ~1.2s). Full pulls happen every 45s and on reconnect.
    ===================================================================== */
 
-const ENTITIES = ['Transactions','Accounts','Categories','Budgets','Goals','Loans','LoanPayments','Preferences','Investments','ExchangeRates'];
-const LS_KEY = 'ledger_state_v1';
+const ENTITIES = ['Wallets','Transactions','Categories','Budgets','Goals','Loans','LoanPayments','Preferences','Investments','ExchangeRates'];
+const LS_KEY = 'ledger_state_v2';
 const CURRENCIES = ['USD','GHS','EUR','GBP','NGN','ZAR','CAD','AUD','JPY','CNY','INR'];
 
 const DEFAULT_STATE = {
   serverUrl: '', auth: null, theme: 'light', baseCurrency: 'GHS',
   showBalances: true, pinHash: '', pinEnabled: false,
   route: 'dashboard', txMonth: null, txAllTime: false,
-  data: {}, syncQueue: [], lastPull: 0
+  selectedWorkspaces: [], data: {}, syncQueue: [], lastPull: 0
 };
-ENTITIES.concat(['Users','ActivityLog']).forEach(function(e){ DEFAULT_STATE.data[e] = []; });
+ENTITIES.concat(['Users','ActivityLog','Workspaces','UserWorkspaceAccess']).forEach(function(e){ DEFAULT_STATE.data[e] = []; });
 
 let S = loadState();
 
@@ -266,6 +268,24 @@ function monthKey(d){ const dt = new Date(d); return dt.getFullYear()+'-'+String
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 
 /* ---------------------------------------------------------------------
+   WORKSPACES / WALLETS — lookups used everywhere
+   --------------------------------------------------------------------- */
+function accessibleWorkspaces(){ return S.data.Workspaces || []; }
+function ensureSelectedWorkspaces(){
+  const ids = accessibleWorkspaces().map(function(w){return w.id;});
+  S.selectedWorkspaces = S.selectedWorkspaces.filter(function(id){ return ids.indexOf(id)>-1; });
+  if (!S.selectedWorkspaces.length && ids.length) S.selectedWorkspaces = ids.slice();
+}
+function walletsInSelected(){ return S.data.Wallets.filter(function(w){ return S.selectedWorkspaces.indexOf(w.workspaceId)>-1; }); }
+function walletsInWorkspace(wsId){ return S.data.Wallets.filter(function(w){ return w.workspaceId===wsId; }); }
+function workspaceOf(id, entity){
+  if (entity==='wallet') { const w = S.data.Wallets.find(function(x){return x.id===id;}); return w?w.workspaceId:null; }
+  return id;
+}
+function wsName(id){ const w = accessibleWorkspaces().find(function(x){return x.id===id;}); return w?w.name:'—'; }
+function walletName(id){ const w = S.data.Wallets.find(function(x){return x.id===id;}); return w?w.name:'—'; }
+
+/* ---------------------------------------------------------------------
    API + SYNC
    --------------------------------------------------------------------- */
 
@@ -297,10 +317,13 @@ function pushQueue(){
   else if (op.kind === 'delete') promise = callServer('delete', { entity: op.entity, id: op.id });
   else if (op.kind === 'transfer') promise = callServer('createTransfer', { data: op.data });
   else if (op.kind === 'deleteTransfer') promise = callServer('deleteTransfer', { transferId: op.transferId });
+  else if (op.kind === 'createWorkspace') promise = callServer('createWorkspace', { data: op.data });
+  else if (op.kind === 'updateWorkspace') promise = callServer('updateWorkspace', { id: op.id, data: op.data });
+  else if (op.kind === 'deleteWorkspace') promise = callServer('deleteWorkspace', { id: op.id });
   else promise = Promise.resolve({ok:true});
 
   promise.then(function(res){
-    if (!res || res.ok === false) { console.warn('sync failed', res); }
+    if (!res || res.ok === false) { console.warn('sync failed', res); if (res && res.error) toast(res.error, 'error'); }
     S.syncQueue.shift(); saveState(); updateSyncBadge();
     if (S.syncQueue.length) pushQueue(); else setTimeout(pullAll, 400);
   }).catch(function(err){
@@ -313,8 +336,10 @@ function pullAll(){
   if (!navigator.onLine || !S.serverUrl || !S.auth) return Promise.resolve();
   return callServer('listAll', {}).then(function(res){
     if (!res || res.ok === false) return;
-    ENTITIES.concat(['Users']).forEach(function(e){ if (res[e]) S.data[e] = res[e]; });
+    ENTITIES.concat(['Users','Workspaces']).forEach(function(e){ if (res[e]) S.data[e] = res[e]; });
     if (res.activityLog) S.data.ActivityLog = res.activityLog;
+    if (res.userWorkspaceAccess) S.data.UserWorkspaceAccess = res.userWorkspaceAccess;
+    ensureSelectedWorkspaces();
     S.lastPull = Date.now();
     saveState();
     render();
@@ -366,17 +391,40 @@ function localDelete(entity, id){
   queueSync({ kind:'delete', entity: entity, id: id });
 }
 function localTransfer(data){
+  const fromW = S.data.Wallets.find(function(w){return w.id===data.fromWallet;});
+  const toW = S.data.Wallets.find(function(w){return w.id===data.toWallet;});
   const transferId = uid();
   const now = new Date().toISOString();
-  const legOut = { id: uid(), date:data.date, type:'Transfer', account:data.fromAccount, category:'Transfer',
-    amount: -Math.abs(data.amount), currency:data.currency||'', description:data.description||('Transfer to '+data.toAccount),
-    tags:'', recurring:'', nextDueDate:'', receiptUrl:'', transferId:transferId, transferPeer:data.toAccount, createdBy:S.auth.email, createdAt:now };
-  const legIn = { id: uid(), date:data.date, type:'Transfer', account:data.toAccount, category:'Transfer',
-    amount: Math.abs(data.amount), currency:data.currency||'', description:data.description||('Transfer from '+data.fromAccount),
-    tags:'', recurring:'', nextDueDate:'', receiptUrl:'', transferId:transferId, transferPeer:data.fromAccount, createdBy:S.auth.email, createdAt:now };
+  const legOut = { id: uid(), workspaceId: fromW.workspaceId, wallet:data.fromWallet, type:'Transfer', category:'Transfer',
+    amount: -Math.abs(data.amount), currency: fromW.currency, date: data.date,
+    description:data.description||('Transfer to '+toW.name),
+    tags:'', recurring:'', nextDueDate:'', receiptUrl:'', transferId:transferId, transferPeer:data.toWallet, createdBy:S.auth.email, createdAt:now };
+  const legIn = { id: uid(), workspaceId: toW.workspaceId, wallet:data.toWallet, type:'Transfer', category:'Transfer',
+    amount: Math.abs(data.amount), currency: toW.currency, date: data.date,
+    description:data.description||('Transfer from '+fromW.name),
+    tags:'', recurring:'', nextDueDate:'', receiptUrl:'', transferId:transferId, transferPeer:data.fromWallet, createdBy:S.auth.email, createdAt:now };
   S.data.Transactions.push(legOut, legIn);
   saveState(); render();
   queueSync({ kind:'transfer', data: data });
+}
+function localCreateWorkspace(data){
+  data.id = uid(); data.createdAt = new Date().toISOString();
+  S.data.Workspaces.push(data);
+  S.selectedWorkspaces.push(data.id);
+  saveState(); render();
+  queueSync({ kind:'createWorkspace', data: data });
+}
+function localUpdateWorkspace(id, patch){
+  const idx = S.data.Workspaces.findIndex(function(w){return w.id===id;});
+  if (idx>-1) S.data.Workspaces[idx] = Object.assign({}, S.data.Workspaces[idx], patch);
+  saveState(); render();
+  queueSync({ kind:'updateWorkspace', id:id, data:patch });
+}
+function localDeleteWorkspace(id){
+  S.data.Workspaces = S.data.Workspaces.filter(function(w){return w.id!==id;});
+  S.selectedWorkspaces = S.selectedWorkspaces.filter(function(x){return x!==id;});
+  saveState(); render();
+  queueSync({ kind:'deleteWorkspace', id:id });
 }
 
 /* ---------------------------------------------------------------------
@@ -389,7 +437,7 @@ function processRecurringLocally(){
     let due = new Date(t.nextDueDate);
     let guard = 0;
     while (due <= today && guard < 24) {
-      const copy = { id: uid(), date: due.toISOString().slice(0,10), type:t.type, account:t.account, category:t.category,
+      const copy = { id: uid(), workspaceId:t.workspaceId, date: due.toISOString().slice(0,10), type:t.type, wallet:t.wallet, category:t.category,
         amount:t.amount, currency:t.currency, description:t.description, tags:t.tags, recurring:'', nextDueDate:'',
         receiptUrl:'', transferId:'', transferPeer:'', createdBy:'recurring:'+t.id, createdAt:new Date().toISOString() };
       S.data.Transactions.push(copy);
@@ -405,7 +453,7 @@ function processRecurringLocally(){
 }
 
 /* ---------------------------------------------------------------------
-   DERIVED / CALCULATIONS
+   DERIVED / CALCULATIONS — all scoped to S.selectedWorkspaces
    --------------------------------------------------------------------- */
 
 function rateFor(cur){
@@ -418,39 +466,42 @@ function rateFor(cur){
 }
 function toBase(amount, cur){ return Number(amount||0) / rateFor(cur); }
 
-function accountBalance(accId){
-  const acc = S.data.Accounts.find(function(a){ return a.id===accId; });
-  if (!acc) return 0;
-  let bal = Number(acc.openingBalance||0);
-  S.data.Transactions.filter(function(t){ return t.account===accId; }).forEach(function(t){
+function walletBalance(walletId){
+  const w = S.data.Wallets.find(function(a){ return a.id===walletId; });
+  if (!w) return 0;
+  let bal = Number(w.openingBalance||0);
+  S.data.Transactions.filter(function(t){ return t.wallet===walletId; }).forEach(function(t){
     bal += (t.type==='Expense' ? -Math.abs(Number(t.amount)) : Number(t.amount));
   });
   return bal;
 }
-function accountBalanceBase(accId){
-  const acc = S.data.Accounts.find(function(a){ return a.id===accId; });
-  return toBase(accountBalance(accId), acc?acc.currency:S.baseCurrency);
+function walletBalanceBase(walletId){
+  const w = S.data.Wallets.find(function(a){ return a.id===walletId; });
+  return toBase(walletBalance(walletId), w?w.currency:S.baseCurrency);
 }
+function inScope(workspaceId){ return S.selectedWorkspaces.indexOf(workspaceId) > -1; }
+
 function netWorth(){
   let cash = 0;
-  S.data.Accounts.forEach(function(a){
-    if (['Debt'].includes(a.type)) return;
-    cash += accountBalanceBase(a.id);
-  });
+  walletsInSelected().forEach(function(w){ if (w.type!=='Debt') cash += walletBalanceBase(w.id); });
   let invest = 0;
-  S.data.Investments.forEach(function(i){ invest += toBase(i.currentValue, S.data.Accounts.find(function(a){return a.id===i.account;})?.currency); });
+  S.data.Investments.filter(function(i){ return inScope(i.workspaceId); }).forEach(function(i){
+    const w = S.data.Wallets.find(function(a){return a.id===i.wallet;});
+    invest += toBase(i.currentValue, w?w.currency:S.baseCurrency);
+  });
   let loansOut = 0, loansOwed = 0;
-  S.data.Loans.forEach(function(l){
+  S.data.Loans.filter(function(l){ return inScope(l.workspaceId); }).forEach(function(l){
     const outstanding = loanOutstanding(l.id);
     if (l.direction==='Lent') loansOut += toBase(outstanding, l.currency);
     else loansOwed += toBase(outstanding, l.currency);
   });
   return { total: cash + invest + loansOut - loansOwed, cash: cash, invest: invest, loansOut: loansOut, loansOwed: loansOwed };
 }
+function txInScope(t){ return inScope(t.workspaceId); }
 function cashFlowThisMonth(){
   const mk = monthKey(new Date());
   let income=0, expense=0;
-  S.data.Transactions.filter(function(t){ return t.type!=='Transfer' && monthKey(t.date)===mk; }).forEach(function(t){
+  S.data.Transactions.filter(function(t){ return t.type!=='Transfer' && monthKey(t.date)===mk && txInScope(t); }).forEach(function(t){
     const amt = toBase(Math.abs(Number(t.amount)), t.currency);
     if (t.type==='Income') income += amt; else expense += amt;
   });
@@ -463,7 +514,7 @@ function monthlySeries(months){
     const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
     const mk = monthKey(d);
     let income=0, expense=0;
-    S.data.Transactions.filter(function(t){ return t.type!=='Transfer' && monthKey(t.date)===mk; }).forEach(function(t){
+    S.data.Transactions.filter(function(t){ return t.type!=='Transfer' && monthKey(t.date)===mk && txInScope(t); }).forEach(function(t){
       const amt = toBase(Math.abs(Number(t.amount)), t.currency);
       if (t.type==='Income') income+=amt; else expense+=amt;
     });
@@ -475,8 +526,8 @@ function budgetSpent(b){
   const mk = monthKey(new Date());
   let spent = 0;
   S.data.Transactions.filter(function(t){
-    return t.type==='Expense' && monthKey(t.date)===mk &&
-      (!b.category || t.category===b.category) && (!b.account || t.account===b.account);
+    return t.type==='Expense' && monthKey(t.date)===mk && t.workspaceId===b.workspaceId &&
+      (!b.category || t.category===b.category) && (!b.wallet || t.wallet===b.wallet);
   }).forEach(function(t){ spent += toBase(Math.abs(Number(t.amount)), t.currency); });
   return spent;
 }
@@ -488,10 +539,10 @@ function loanOutstanding(loanId){
 }
 function investmentSummary(){
   let cost=0, value=0;
-  S.data.Investments.forEach(function(i){
-    const acc = S.data.Accounts.find(function(a){return a.id===i.account;});
-    cost += toBase(i.amountInvested, acc?acc.currency:S.baseCurrency);
-    value += toBase(i.currentValue, acc?acc.currency:S.baseCurrency);
+  S.data.Investments.filter(function(i){ return inScope(i.workspaceId); }).forEach(function(i){
+    const w = S.data.Wallets.find(function(a){return a.id===i.wallet;});
+    cost += toBase(i.amountInvested, w?w.currency:S.baseCurrency);
+    value += toBase(i.currentValue, w?w.currency:S.baseCurrency);
   });
   return { cost:cost, value:value, gain:value-cost };
 }
@@ -503,39 +554,39 @@ function generateInsights(){
     const pct = ((series[1].expense-series[0].expense)/series[0].expense)*100;
     if (Math.abs(pct) >= 8) out.push({ level: pct>0?'warning':'success', text: 'Spending is ' + (pct>0?'up ':'down ') + Math.abs(pct).toFixed(0) + '% vs last month.' });
   }
-  S.data.Budgets.forEach(function(b){
+  S.data.Budgets.filter(function(b){return inScope(b.workspaceId);}).forEach(function(b){
     const spent = budgetSpent(b);
     const pct = b.monthlyLimit ? (spent/Number(b.monthlyLimit))*100 : 0;
-    if (pct >= 100) out.push({ level:'danger', text: (b.category||'Budget') + ' is over budget this month.' });
-    else if (pct >= 85) out.push({ level:'warning', text: (b.category||'Budget') + ' is at ' + pct.toFixed(0) + '% of its monthly limit.' });
+    if (pct >= 100) out.push({ level:'danger', text: (b.category||'Budget') + ' is over budget this month (' + wsName(b.workspaceId) + ').' });
+    else if (pct >= 85) out.push({ level:'warning', text: (b.category||'Budget') + ' is at ' + pct.toFixed(0) + '% of its monthly limit (' + wsName(b.workspaceId) + ').' });
   });
-  S.data.Goals.forEach(function(g){
+  S.data.Goals.filter(function(g){return inScope(g.workspaceId);}).forEach(function(g){
     if (!g.deadline) return;
     const days = Math.ceil((new Date(g.deadline)-new Date())/86400000);
     if (days>=0 && days<=30) out.push({ level:'warning', text: '"'+g.name+'" deadline is in ' + days + ' day(s).' });
   });
-  S.data.Loans.forEach(function(l){
+  S.data.Loans.filter(function(l){return inScope(l.workspaceId);}).forEach(function(l){
     if (!l.dueDate || l.status==='Closed') return;
     const days = Math.ceil((new Date(l.dueDate)-new Date())/86400000);
     if (days>=0 && days<=14) out.push({ level:'warning', text: (l.direction==='Lent'?'Loan to ':'Loan from ') + l.counterparty + ' due in ' + days + ' day(s).' });
   });
-  const todayTx = S.data.Transactions.some(function(t){ return t.date===todayISO(); });
+  const todayTx = S.data.Transactions.some(function(t){ return t.date===todayISO() && txInScope(t); });
   if (!todayTx) out.push({ level:'neutral', text: 'No transaction logged yet today.' });
-  // 3-month category trend
   const cats = {};
-  S.data.Categories.filter(function(c){return c.type==='Expense';}).forEach(function(c){ cats[c.name]=[]; });
+  S.data.Categories.filter(function(c){return c.type==='Expense' && inScope(c.workspaceId);}).forEach(function(c){ cats[c.name+'|'+c.workspaceId]=[]; });
   for (let i=2;i>=0;i--){
     const d = new Date(); d.setMonth(d.getMonth()-i);
     const mk = monthKey(d);
-    Object.keys(cats).forEach(function(cat){
-      const sum = S.data.Transactions.filter(function(t){ return t.type==='Expense' && t.category===cat && monthKey(t.date)===mk; })
+    Object.keys(cats).forEach(function(key){
+      const cat = key.split('|')[0], wsId = key.split('|')[1];
+      const sum = S.data.Transactions.filter(function(t){ return t.type==='Expense' && t.category===cat && t.workspaceId===wsId && monthKey(t.date)===mk; })
         .reduce(function(s,t){ return s+toBase(Math.abs(t.amount),t.currency); },0);
-      cats[cat].push(sum);
+      cats[key].push(sum);
     });
   }
-  Object.keys(cats).forEach(function(cat){
-    const v = cats[cat];
-    if (v[0]>0 && v[1]>v[0] && v[2]>v[1]) out.push({ level:'warning', text: cat + ' spending has risen for 3 straight months.' });
+  Object.keys(cats).forEach(function(key){
+    const v = cats[key];
+    if (v[0]>0 && v[1]>v[0] && v[2]>v[1]) out.push({ level:'warning', text: key.split('|')[0] + ' spending has risen for 3 straight months.' });
   });
   return out;
 }
@@ -547,7 +598,9 @@ function generateInsights(){
 const NAV = [
   { id:'dashboard', label:'Dashboard', icon:'layout-dashboard' },
   { id:'transactions', label:'Transactions', icon:'arrow-left-right' },
-  { id:'accounts', label:'Accounts', icon:'wallet' },
+  { id:'wallets', label:'Wallets', icon:'wallet' },
+  { id:'workspaces', label:'Workspaces', icon:'layers' },
+  { id:'categories', label:'Categories', icon:'tags' },
   { id:'budgets', label:'Budgets', icon:'pie-chart' },
   { id:'goals', label:'Goals & Planning', icon:'target' },
   { id:'loans', label:'Loans', icon:'handshake' },
@@ -558,7 +611,7 @@ const NAV = [
   { id:'people', label:'People', icon:'users', ownerOnly:true },
   { id:'settings', label:'Settings', icon:'settings' }
 ];
-const MOBILE_TABS = ['dashboard','transactions','accounts','insights'];
+const MOBILE_TABS = ['dashboard','transactions','wallets','insights'];
 
 function go(route){ S.route = route; saveState(); render(); window.scrollTo(0,0); }
 
@@ -572,6 +625,7 @@ function shellHtml(innerHtml){
   return '' +
   '<div class="sidebar">' +
     '<div class="brand"><div class="brand-mark">TL</div><div class="brand-name">The Ledger</div></div>' +
+    workspaceSwitcherHtml() +
     navItems.map(function(n){
       return '<div class="nav-item '+(S.route===n.id?'active':'')+'" onclick="go(\''+n.id+'\')">'+iconSvg(n.icon)+'<span>'+n.label+'</span></div>';
     }).join('') +
@@ -603,8 +657,6 @@ function shellHtml(innerHtml){
 
 function iconSvg(name){ return '<i data-lucide="'+name+'"></i>'; }
 function safeIcons(){
-  // Guards against the lucide CDN being blocked or slow (e.g. sandboxed
-  // previews) — the app stays fully usable without icons if it fails.
   try { if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons(); }
   catch (e) { console.warn('Icon render skipped:', e); }
 }
@@ -616,6 +668,44 @@ function doLogout(){
   if (!confirm('Log out of this device?')) return;
   S.auth = null; saveState(); render();
 }
+
+/* ---------------------------------------------------------------------
+   WORKSPACE SWITCHER — selects which workspace(s) are "in view"
+   (single, several, or all — Dashboard/Reports/derived calcs all
+   filter against S.selectedWorkspaces)
+   --------------------------------------------------------------------- */
+function workspaceSwitcherHtml(){
+  const all = accessibleWorkspaces();
+  if (!all.length) return '';
+  const allSelected = S.selectedWorkspaces.length === all.length;
+  const label = allSelected ? 'All Workspaces' : (S.selectedWorkspaces.length===1 ? wsName(S.selectedWorkspaces[0]) : S.selectedWorkspaces.length + ' Workspaces');
+  return '' +
+  '<div style="margin-bottom:10px;">' +
+    '<div class="icon-btn" style="width:100%;justify-content:space-between;padding:0 12px;height:40px;" onclick="toggleWsMenu(event)">' +
+      '<span style="display:flex;align-items:center;gap:8px;overflow:hidden;"><span class="badge-dot" style="background:var(--primary);"></span><span style="font-weight:700;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escapeHtml(label)+'</span></span>' +
+      iconSvg('chevron-down') +
+    '</div>' +
+    '<div id="wsMenu" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:14px;margin-top:6px;padding:8px;box-shadow:var(--shadow-md);">' +
+      '<div class="nav-item" style="font-size:12.5px;" onclick="setAllWorkspaces()">'+iconSvg('check-check')+'<span>Select all</span></div>' +
+      '<div class="nav-sep"></div>' +
+      all.map(function(w){
+        const on = S.selectedWorkspaces.indexOf(w.id)>-1;
+        return '<div class="nav-item" style="font-size:12.5px;justify-content:space-between;" onclick="toggleWorkspace(\''+w.id+'\')"><span style="display:flex;align-items:center;gap:8px;">'+iconSvg(w.icon||'briefcase')+'<span>'+escapeHtml(w.name)+'</span></span>'+(on?iconSvg('check'):'')+'</div>';
+      }).join('') +
+      '<div class="nav-sep"></div>' +
+      '<div class="nav-item" style="font-size:12.5px;" onclick="go(\'workspaces\')">'+iconSvg('settings-2')+'<span>Manage workspaces</span></div>' +
+    '</div>' +
+  '</div>';
+}
+function toggleWsMenu(e){ e.stopPropagation(); const m = document.getElementById('wsMenu'); m.style.display = m.style.display==='none'?'block':'none'; }
+document.addEventListener('click', function(){ const m = document.getElementById('wsMenu'); if (m) m.style.display='none'; });
+function toggleWorkspace(id){
+  const idx = S.selectedWorkspaces.indexOf(id);
+  if (idx>-1) { if (S.selectedWorkspaces.length>1) S.selectedWorkspaces.splice(idx,1); }
+  else S.selectedWorkspaces.push(id);
+  saveState(); render();
+}
+function setAllWorkspaces(){ S.selectedWorkspaces = accessibleWorkspaces().map(function(w){return w.id;}); saveState(); render(); }
 
 /* ---------------------------------------------------------------------
    MODAL SYSTEM
@@ -654,6 +744,21 @@ function renderLogin(){
   '</div></div>';
 }
 
+function showAccessCodeModal(code, email){
+  openModal('' +
+    '<div class="modal-head"><h3>Save your access code</h3></div>' +
+    '<p class="muted" style="font-size:13px;">This is the only time it will be shown here. Write it down or copy it now — you\'ll need it plus your email and the server URL to log in on any device.</p>' +
+    '<div class="card" style="background:var(--surface-2);text-align:center;padding:22px;margin:14px 0;">' +
+      '<div class="mono" id="accessCodeText" style="font-size:24px;font-weight:700;letter-spacing:2px;">'+escapeHtml(code)+'</div>' +
+      '<div class="muted" style="font-size:12px;margin-top:6px;">'+escapeHtml(email)+'</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;">' +
+      '<span class="btn btn-outline btn-block" onclick="navigator.clipboard.writeText(\''+code+'\').then(function(){toast(\'Copied\',\'success\');})">'+iconSvg('copy')+' Copy code</span>' +
+      '<span class="btn btn-primary btn-block" onclick="closeModal()">Done, I saved it</span>' +
+    '</div>'
+  );
+}
+
 function doBootstrap(){
   const url = document.getElementById('loginUrl').value.trim();
   const name = document.getElementById('loginName').value.trim();
@@ -667,8 +772,7 @@ function doBootstrap(){
       if (!res.ok) { toast(res.error||'Could not bootstrap', 'error'); btn.disabled=false; btn.textContent='Create Owner account'; return; }
       S.serverUrl = url; S.auth = { email: res.user.email, code: res.accessCode, role: res.user.role, name: res.user.name };
       saveState();
-      toast('Owner account created. Your access code: ' + res.accessCode, 'success');
-      pullAll().then(render);
+      pullAll().then(function(){ render(); showAccessCodeModal(res.accessCode, res.user.email); });
     })
     .catch(function(err){ toast('Network error: '+err, 'error'); btn.disabled=false; btn.textContent='Create Owner account'; });
 }
@@ -695,12 +799,14 @@ function doLogin(){
    --------------------------------------------------------------------- */
 
 function renderDashboard(){
+  ensureSelectedWorkspaces();
   const nw = netWorth();
   const cf = cashFlowThisMonth();
   const inv = investmentSummary();
   const series = monthlySeries(6);
   const maxV = Math.max(1, Math.max.apply(null, series.map(function(s){return Math.max(s.income,s.expense);})));
   const balClass = S.showBalances ? '' : 'blur-balance';
+  const multiWs = S.selectedWorkspaces.length > 1;
 
   const barsW = 700, barsH = 200, pad = 30, groupW = (barsW-pad*2)/series.length;
   let barsSvg = '<svg viewBox="0 0 '+barsW+' '+(barsH+30)+'" style="width:100%;height:auto;">';
@@ -720,16 +826,24 @@ function renderDashboard(){
       '<span style="font-size:13.5px;">'+escapeHtml(a.text)+'</span></div>';
   }).join('') : '<div class="empty">'+iconSvg('check-circle')+'<div>Nothing needs attention right now.</div></div>';
 
-  const recentTx = S.data.Transactions.filter(function(t){return true;}).sort(function(a,b){return new Date(b.date)-new Date(a.date);}).slice(0,6);
+  const recentTx = S.data.Transactions.filter(txInScope).sort(function(a,b){return new Date(b.date)-new Date(a.date);}).slice(0,6);
   const recentHtml = recentTx.length ? recentTx.map(txRow).join('') : '<div class="empty">'+iconSvg('inbox')+'<div>No transactions yet.</div></div>';
 
-  const budgetBars = S.data.Budgets.slice(0,4).map(function(b){
+  const budgetBars = S.data.Budgets.filter(function(b){return inScope(b.workspaceId);}).slice(0,4).map(function(b){
     const spent = budgetSpent(b); const pct = b.monthlyLimit? Math.min(100,(spent/Number(b.monthlyLimit))*100):0;
     return '<div style="margin-bottom:14px;">' +
-      '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;"><span style="font-weight:700;">'+escapeHtml(b.category)+'</span><span class="mono muted">'+fmtMoney(spent)+' / '+fmtMoney(b.monthlyLimit)+'</span></div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;"><span style="font-weight:700;">'+escapeHtml(b.category)+(multiWs?' <span class="muted">· '+wsName(b.workspaceId)+'</span>':'')+'</span><span class="mono muted">'+fmtMoney(spent)+' / '+fmtMoney(b.monthlyLimit)+'</span></div>' +
       '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%;background:'+(pct>=100?'var(--danger)':pct>=85?'var(--warning)':'var(--primary)')+'"></div></div>' +
     '</div>';
   }).join('') || '<div class="empty" style="padding:20px;">No budgets set yet.</div>';
+
+  const wallets = walletsInSelected();
+  const walletsHtml = wallets.length ? wallets.map(function(w){
+    const bal = walletBalance(w.id);
+    return '<div class="row-hover" style="display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:12px;cursor:pointer;" onclick="go(\'transactions\');window.__txWalletFilter=\''+w.id+'\';render();">' +
+      '<div style="display:flex;align-items:center;gap:10px;min-width:0;"><span class="badge-dot" style="background:'+accentFor(w.type)+';width:10px;height:10px;flex-shrink:0;"></span><span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(w.name)+(multiWs?' <span class="muted" style="font-weight:400;">· '+wsName(w.workspaceId)+'</span>':'')+'</span></div>' +
+      '<span class="mono '+balClass+'" style="font-weight:700;flex-shrink:0;">'+fmtMoney(bal, w.currency)+'</span></div>';
+  }).join('') : '<div class="empty">'+iconSvg('wallet')+'<div>Add a wallet to get started.</div></div>';
 
   return '' +
   '<div class="grid grid-4" style="margin-bottom:16px;">' +
@@ -741,15 +855,8 @@ function renderDashboard(){
 
   '<div class="grid grid-2" style="align-items:start;margin-bottom:16px;">' +
     '<div class="card">' +
-      '<h4 style="margin-bottom:14px;">Accounts</h4>' +
-      '<div style="display:flex;flex-direction:column;gap:8px;">' +
-      (S.data.Accounts.length ? S.data.Accounts.map(function(a){
-        const bal = accountBalance(a.id);
-        return '<div class="row-hover" style="display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:12px;cursor:pointer;" onclick="go(\'transactions\');window.__txAccountFilter=\''+a.id+'\';render();">' +
-          '<div style="display:flex;align-items:center;gap:10px;"><span class="badge-dot" style="background:'+accentFor(a.type)+';width:10px;height:10px;"></span><span style="font-weight:600;">'+escapeHtml(a.name)+'</span></div>' +
-          '<span class="mono '+balClass+'" style="font-weight:700;">'+fmtMoney(bal, a.currency)+'</span></div>';
-      }).join('') : '<div class="empty">'+iconSvg('wallet')+'<div>Add your first account to get started.</div></div>') +
-      '</div>' +
+      '<h4 style="margin-bottom:14px;">Wallets</h4>' +
+      '<div style="display:flex;flex-direction:column;gap:8px;">' + walletsHtml + '</div>' +
     '</div>' +
     '<div class="card">' +
       '<h4 style="margin-bottom:14px;">Alerts</h4>' + alertHtml +
@@ -777,18 +884,18 @@ function statCard(label, value, sub, balClass){
 }
 function levelColor(l){ return l==='danger'?'var(--danger)':l==='warning'?'var(--warning)':l==='success'?'var(--success)':'var(--text-2)'; }
 function accentFor(type){
-  const map = { Personal:'var(--primary)', Business:'var(--accent)', Family:'#8B5CF6', Project:'#F97316', Savings:'var(--success)', Investment:'#EC4899', Debt:'var(--danger)', Crypto:'#F59E0B', Other:'var(--text-2)' };
+  const map = { Cash:'var(--success)', Bank:'var(--primary)', 'Mobile Money':'var(--accent)', Card:'#8B5CF6', Crypto:'#F59E0B', Savings:'var(--success)', Investment:'#EC4899', Debt:'var(--danger)', Other:'var(--text-2)' };
   return map[type] || 'var(--primary)';
 }
 function txRow(t){
-  const acc = S.data.Accounts.find(function(a){return a.id===t.account;});
+  const w = S.data.Wallets.find(function(a){return a.id===t.wallet;});
   const amtColor = t.type==='Income' ? 'var(--success)' : t.type==='Transfer' ? 'var(--primary)' : 'var(--danger)';
   const sign = t.type==='Expense' ? '-' : (t.type==='Income'?'+':(Number(t.amount)<0?'-':'+'));
   return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">' +
     '<div style="display:flex;align-items:center;gap:12px;min-width:0;">' +
       '<div style="width:36px;height:36px;border-radius:10px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;flex-shrink:0;">'+iconSvg(t.type==='Income'?'arrow-down-left':t.type==='Transfer'?'arrow-left-right':'arrow-up-right')+'</div>' +
       '<div style="min-width:0;"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(t.description||t.category)+'</div>' +
-      '<div class="muted" style="font-size:11.5px;">'+escapeHtml(t.category)+' · '+(acc?escapeHtml(acc.name):'')+' · '+fmtDate(t.date)+'</div></div>' +
+      '<div class="muted" style="font-size:11.5px;">'+escapeHtml(t.category)+' · '+(w?escapeHtml(w.name):'')+' · '+wsName(t.workspaceId)+' · '+fmtDate(t.date)+'</div></div>' +
     '</div>' +
     '<div class="mono '+(S.showBalances?'':'blur-balance')+'" style="font-weight:700;color:'+amtColor+';flex-shrink:0;">'+sign+fmtMoney(Math.abs(t.amount), t.currency).replace(/^[+-]/,'')+'</div>' +
   '</div>';
@@ -798,25 +905,36 @@ function txRow(t){
    TRANSACTIONS
    --------------------------------------------------------------------- */
 
-window.__txFilters = { search:'', account:'', type:'' };
+window.__txFilters = { search:'', wallet:'', type:'' };
 window.__txSelected = {};
+
+function walletOptionsGrouped(selectedId){
+  return accessibleWorkspaces().map(function(ws){
+    const wallets = walletsInWorkspace(ws.id);
+    if (!wallets.length) return '';
+    return '<optgroup label="'+escapeHtml(ws.name)+'">' +
+      wallets.map(function(w){ return '<option value="'+w.id+'" '+(selectedId===w.id?'selected':'')+'>'+escapeHtml(w.name)+' ('+w.currency+')</option>'; }).join('') +
+    '</optgroup>';
+  }).join('');
+}
 
 function renderTransactions(){
   if (!S.txMonth) S.txMonth = monthKey(new Date());
   const f = window.__txFilters;
-  let list = S.data.Transactions.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date) || String(b.createdAt).localeCompare(String(a.createdAt)); });
+  let list = S.data.Transactions.filter(txInScope).sort(function(a,b){ return new Date(b.date)-new Date(a.date) || String(b.createdAt).localeCompare(String(a.createdAt)); });
 
   if (!S.txAllTime) list = list.filter(function(t){ return monthKey(t.date)===S.txMonth; });
-  if (window.__txAccountFilter) { f.account = window.__txAccountFilter; window.__txAccountFilter = null; }
+  if (window.__txWalletFilter) { f.wallet = window.__txWalletFilter; window.__txWalletFilter = null; }
   if (f.search) list = list.filter(function(t){ return (t.description+' '+t.category).toLowerCase().indexOf(f.search.toLowerCase())>-1; });
-  if (f.account) list = list.filter(function(t){ return t.account===f.account; });
+  if (f.wallet) list = list.filter(function(t){ return t.wallet===f.wallet; });
   if (f.type) list = list.filter(function(t){ return t.type===f.type; });
 
   const [y,m] = S.txMonth.split('-').map(Number);
   const monthLabel = new Date(y, m-1, 1).toLocaleDateString(undefined,{month:'long', year:'numeric'});
+  const multiWs = S.selectedWorkspaces.length > 1;
 
   const rows = list.map(function(t){
-    const acc = S.data.Accounts.find(function(a){return a.id===t.account;});
+    const w = S.data.Wallets.find(function(a){return a.id===t.wallet;});
     const amtColor = t.type==='Income' ? 'var(--success)' : t.type==='Transfer' ? 'var(--primary)' : 'var(--danger)';
     const checked = window.__txSelected[t.id] ? 'checked' : '';
     return '<tr class="row-hover">' +
@@ -825,7 +943,7 @@ function renderTransactions(){
       '<td data-label="Type"><span class="pill '+(t.type==='Income'?'pill-success':t.type==='Transfer'?'pill-neutral':'pill-danger')+'">'+t.type+'</span></td>' +
       '<td data-label="Description">'+escapeHtml(t.description||'—')+(t.recurring?' <span class="pill pill-neutral">'+t.recurring+'</span>':'')+(t.receiptUrl?' <a href="'+t.receiptUrl+'" target="_blank" onclick="event.stopPropagation()" style="color:var(--primary);">'+iconSvg('paperclip')+'</a>':'')+'</td>' +
       '<td data-label="Category">'+escapeHtml(t.category)+'</td>' +
-      '<td data-label="Account">'+escapeHtml(acc?acc.name:'—')+'</td>' +
+      '<td data-label="Wallet">'+escapeHtml(w?w.name:'—')+(multiWs?' <span class="muted" style="font-size:11px;">· '+wsName(t.workspaceId)+'</span>':'')+'</td>' +
       '<td data-label="Amount" class="mono '+(S.showBalances?'':'blur-balance')+'" style="color:'+amtColor+';font-weight:700;">'+fmtMoney(t.amount, t.currency)+'</td>' +
       '<td data-label=""><div class="icon-btn" style="width:30px;height:30px;" onclick="openTxModal(\''+t.id+'\')">'+iconSvg('pencil')+'</div></td>' +
     '</tr>';
@@ -851,15 +969,14 @@ function renderTransactions(){
       '<div class="field" style="margin-bottom:0;"><input placeholder="Search description or category…" value="'+escapeHtml(f.search)+'" oninput="window.__txFilters.search=this.value;render();"></div>' +
       '<div class="field" style="margin-bottom:0;max-width:160px;"><select onchange="window.__txFilters.type=this.value;render();"><option value="">All types</option>' +
         ['Income','Expense','Transfer'].map(function(t){return '<option '+(f.type===t?'selected':'')+'>'+t+'</option>';}).join('') + '</select></div>' +
-      '<div class="field" style="margin-bottom:0;max-width:200px;"><select onchange="window.__txFilters.account=this.value;render();"><option value="">All accounts</option>' +
-        S.data.Accounts.map(function(a){return '<option value="'+a.id+'" '+(f.account===a.id?'selected':'')+'>'+escapeHtml(a.name)+'</option>';}).join('') + '</select></div>' +
+      '<div class="field" style="margin-bottom:0;max-width:220px;"><select onchange="window.__txFilters.wallet=this.value;render();"><option value="">All wallets</option>' + walletOptionsGrouped(f.wallet) + '</select></div>' +
     '</div>' +
     (Object.values(window.__txSelected).some(Boolean) ? '<div style="margin-top:10px;"><span class="btn btn-danger btn-sm" onclick="bulkDeleteTx()">'+iconSvg('trash-2')+' Delete selected</span></div>' : '') +
   '</div>' +
   '<div class="card" style="padding:8px 20px;">' +
     (list.length ?
-    '<table class="responsive-table"><thead><tr><th></th><th>Date</th><th>Type</th><th>Description</th><th>Category</th><th>Account</th><th>Amount</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>' :
-    '<div class="empty">'+iconSvg('inbox')+'<div>No transactions match. Try a different month or filter.</div></div>') +
+    '<table class="responsive-table"><thead><tr><th></th><th>Date</th><th>Type</th><th>Description</th><th>Category</th><th>Wallet</th><th>Amount</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>' :
+    '<div class="empty">'+iconSvg('inbox')+'<div>No transactions match. Try a different month, workspace, or filter.</div></div>') +
   '</div>';
 }
 
@@ -870,9 +987,11 @@ function shiftMonth(delta){
 }
 
 function exportTxCsv(){
-  const headers = ['date','type','account','category','amount','currency','description','tags'];
-  const accName = function(id){ const a=S.data.Accounts.find(function(x){return x.id===id;}); return a?a.name:id; };
-  const rows = S.data.Transactions.map(function(t){ return headers.map(function(h){ return h==='account' ? accName(t[h]) : ('"'+String(t[h]==null?'':t[h]).replace(/"/g,'""')+'"'); }).join(','); });
+  const headers = ['date','type','wallet','workspace','category','amount','currency','description','tags'];
+  const rows = S.data.Transactions.filter(txInScope).map(function(t){
+    const vals = { date:t.date, type:t.type, wallet:walletName(t.wallet), workspace:wsName(t.workspaceId), category:t.category, amount:t.amount, currency:t.currency, description:t.description, tags:t.tags };
+    return headers.map(function(h){ return '"'+String(vals[h]==null?'':vals[h]).replace(/"/g,'""')+'"'; }).join(',');
+  });
   const csv = headers.join(',') + '\n' + rows.join('\n');
   downloadFile('ledger-transactions.csv', csv, 'text/csv');
 }
@@ -897,7 +1016,9 @@ function openTxModal(id, forceType){
   const isTransfer = forceType==='Transfer';
   if (isTransfer) return openTransferModal();
 
-  const t = existing || { date: todayISO(), type:'Expense', account: S.data.Accounts[0]?S.data.Accounts[0].id:'', category:'', amount:'', currency:'', description:'', tags:'', recurring:'' };
+  if (!walletsInSelected().length) return toast('Add a wallet first', 'error');
+  const defaultWallet = walletsInSelected()[0];
+  const t = existing || { date: todayISO(), type:'Expense', wallet: defaultWallet.id, category:'', amount:'', currency:'', description:'', tags:'', recurring:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(existing?'Edit':'Add')+' Transaction</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
     '<div class="tabs" id="txTypeTabs">' + ['Income','Expense'].map(function(ty){
@@ -905,8 +1026,8 @@ function openTxModal(id, forceType){
     }).join('') + '</div>' +
     '<div class="field-row"><div class="field"><label>Date</label><input type="date" id="fDate" value="'+t.date+'"></div>' +
     '<div class="field"><label>Amount</label><input type="number" step="0.01" id="fAmount" value="'+t.amount+'" placeholder="0.00"></div></div>' +
-    '<div class="field-row"><div class="field"><label>Account</label><select id="fAccount">'+S.data.Accounts.map(function(a){return '<option value="'+a.id+'" '+(t.account===a.id?'selected':'')+'>'+escapeHtml(a.name)+' ('+a.currency+')</option>';}).join('')+'</select></div>' +
-    '<div class="field"><label>Category</label><select id="fCategory">'+categoryOptions(t.type, t.category)+'</select></div></div>' +
+    '<div class="field-row"><div class="field"><label>Wallet</label><select id="fWallet" onchange="onTxWalletChange()">'+walletOptionsGrouped(t.wallet)+'</select></div>' +
+    '<div class="field"><label>Category</label><select id="fCategory">'+categoryOptions(t.type, t.category, workspaceOf(t.wallet,'wallet'))+'</select></div></div>' +
     '<div class="field"><label>Description</label><input id="fDesc" value="'+escapeHtml(t.description)+'" placeholder="What was this for?"></div>' +
     '<div class="field-row"><div class="field"><label>Tags</label><input id="fTags" value="'+escapeHtml(t.tags)+'" placeholder="optional, comma separated"></div>' +
     '<div class="field"><label>Recurring</label><select id="fRecurring"><option value="">None</option>' + ['Weekly','Monthly','Yearly'].map(function(r){return '<option '+(t.recurring===r?'selected':'')+'>'+r+'</option>';}).join('') + '</select></div></div>' +
@@ -922,23 +1043,27 @@ function openTxModal(id, forceType){
 function setTxType(ty){
   window.__txModalType = ty;
   document.querySelectorAll('#txTypeTabs .tab').forEach(function(el){ el.classList.toggle('active', el.dataset.ty===ty); });
-  const catSelect = document.getElementById('fCategory');
-  if (catSelect) catSelect.innerHTML = categoryOptions(ty, '');
+  onTxWalletChange();
 }
-function categoryOptions(type, selected){
-  return S.data.Categories.filter(function(c){ return c.type===type; })
+function onTxWalletChange(){
+  const walletId = document.getElementById('fWallet').value;
+  const catSelect = document.getElementById('fCategory');
+  if (catSelect) catSelect.innerHTML = categoryOptions(window.__txModalType, '', workspaceOf(walletId,'wallet'));
+}
+function categoryOptions(type, selected, wsId){
+  return S.data.Categories.filter(function(c){ return c.type===type && (!wsId || c.workspaceId===wsId); })
     .map(function(c){ return '<option value="'+escapeHtml(c.name)+'" '+(selected===c.name?'selected':'')+'>'+escapeHtml(c.name)+'</option>'; }).join('');
 }
 
 function saveTxModal(id){
   const amountRaw = Math.abs(Number(document.getElementById('fAmount').value||0));
   if (!amountRaw) return toast('Enter an amount', 'error');
-  const accId = document.getElementById('fAccount').value;
-  const acc = S.data.Accounts.find(function(a){return a.id===accId;});
+  const walletId = document.getElementById('fWallet').value;
+  const w = S.data.Wallets.find(function(a){return a.id===walletId;});
   const data = {
     date: document.getElementById('fDate').value, type: window.__txModalType,
-    account: accId, category: document.getElementById('fCategory').value,
-    amount: amountRaw, currency: acc?acc.currency:'', description: document.getElementById('fDesc').value,
+    wallet: walletId, workspaceId: w?w.workspaceId:'', category: document.getElementById('fCategory').value,
+    amount: amountRaw, currency: w?w.currency:'', description: document.getElementById('fDesc').value,
     tags: document.getElementById('fTags').value, recurring: document.getElementById('fRecurring').value,
     nextDueDate: document.getElementById('fRecurring').value ? nextDueFromToday(document.getElementById('fRecurring').value, document.getElementById('fDate').value) : ''
   };
@@ -977,14 +1102,16 @@ function compressImageToBase64(file){
   });
 }
 
-/* ---- Transfer modal ---- */
+/* ---- Transfer modal (within or across Workspaces) ---- */
 function openTransferModal(){
-  if (S.data.Accounts.length<2) return toast('You need at least 2 accounts to transfer between them', 'error');
+  const all = S.data.Wallets;
+  if (all.length<2) return toast('You need at least 2 wallets to transfer between them', 'error');
   openModal('' +
-    '<div class="modal-head"><h3>Transfer Between Accounts</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div class="modal-head"><h3>Transfer Between Wallets</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<p class="muted" style="font-size:12.5px;">Works within one workspace or across two different ones.</p>' +
     '<div class="field"><label>Date</label><input type="date" id="trDate" value="'+todayISO()+'"></div>' +
-    '<div class="field-row"><div class="field"><label>From</label><select id="trFrom">'+S.data.Accounts.map(function(a){return '<option value="'+a.id+'">'+escapeHtml(a.name)+'</option>';}).join('')+'</select></div>' +
-    '<div class="field"><label>To</label><select id="trTo">'+S.data.Accounts.map(function(a,i){return '<option value="'+a.id+'" '+(i===1?'selected':'')+'>'+escapeHtml(a.name)+'</option>';}).join('')+'</select></div></div>' +
+    '<div class="field-row"><div class="field"><label>From</label><select id="trFrom">'+walletOptionsGrouped(all[0]?all[0].id:'')+'</select></div>' +
+    '<div class="field"><label>To</label><select id="trTo">'+walletOptionsGrouped(all[1]?all[1].id:'')+'</select></div></div>' +
     '<div class="field"><label>Amount</label><input type="number" step="0.01" id="trAmount" placeholder="0.00"></div>' +
     '<div class="field"><label>Note</label><input id="trDesc" placeholder="optional"></div>' +
     '<span class="btn btn-primary btn-block" onclick="saveTransfer()">Transfer</span>'
@@ -993,73 +1120,126 @@ function openTransferModal(){
 function saveTransfer(){
   const from = document.getElementById('trFrom').value, to = document.getElementById('trTo').value;
   const amount = Math.abs(Number(document.getElementById('trAmount').value||0));
-  if (from===to) return toast('Pick two different accounts', 'error');
+  if (from===to) return toast('Pick two different wallets', 'error');
   if (!amount) return toast('Enter an amount', 'error');
-  const acc = S.data.Accounts.find(function(a){return a.id===from;});
-  localTransfer({ date: document.getElementById('trDate').value, fromAccount:from, toAccount:to, amount:amount, currency: acc?acc.currency:'', description: document.getElementById('trDesc').value });
+  localTransfer({ date: document.getElementById('trDate').value, fromWallet:from, toWallet:to, amount:amount, description: document.getElementById('trDesc').value });
   closeModal();
 }
 function openTransferInfoModal(t){
+  const w = S.data.Wallets.find(function(a){return a.id===t.wallet;});
   openModal('' +
     '<div class="modal-head"><h3>Transfer</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
     '<p class="muted">Transfers are a linked pair of records and can\'t be edited directly — delete and recreate if something needs to change.</p>' +
-    '<div class="card" style="background:var(--surface-2);"><div>Date: '+fmtDate(t.date)+'</div><div>Amount: '+fmtMoney(Math.abs(t.amount), t.currency)+'</div><div>Note: '+escapeHtml(t.description||'—')+'</div></div>' +
+    '<div class="card" style="background:var(--surface-2);"><div>Date: '+fmtDate(t.date)+'</div><div>Wallet: '+escapeHtml(w?w.name:'—')+' ('+wsName(t.workspaceId)+')</div><div>Amount: '+fmtMoney(Math.abs(t.amount), t.currency)+'</div><div>Note: '+escapeHtml(t.description||'—')+'</div></div>' +
     '<span class="btn btn-danger btn-block" style="margin-top:14px;" onclick="localDelete(\'Transactions\',\''+t.id+'\');closeModal();">Delete transfer</span>'
   );
 }
 
 /* ---------------------------------------------------------------------
-   ACCOUNTS
+   WALLETS
    --------------------------------------------------------------------- */
 
-function renderAccounts(){
-  const cards = S.data.Accounts.map(function(a){
-    const bal = accountBalance(a.id);
-    const inBase = a.currency!==S.baseCurrency ? '<div class="stat-sub mono">≈ '+fmtMoney(toBase(bal,a.currency))+'</div>' : '';
-    return '<div class="card" style="border-top:3px solid '+accentFor(a.type)+';cursor:pointer;" onclick="go(\'transactions\');window.__txAccountFilter=\''+a.id+'\';render();">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
-        '<div><div style="font-weight:700;">'+escapeHtml(a.name)+'</div><div class="muted" style="font-size:12px;">'+a.type+' · '+a.currency+'</div></div>' +
-        (canEdit()?'<div class="icon-btn" style="width:30px;height:30px;" onclick="event.stopPropagation();openAccountModal(\''+a.id+'\')">'+iconSvg('pencil')+'</div>':'') +
-      '</div>' +
-      '<div class="stat-value mono '+(S.showBalances?'':'blur-balance')+'" style="margin-top:14px;">'+fmtMoney(bal, a.currency)+'</div>' +
-      inBase +
+function renderWallets(){
+  const multiWs = S.selectedWorkspaces.length > 1;
+  const sections = accessibleWorkspaces().filter(function(ws){return inScope(ws.id);}).map(function(ws){
+    const wallets = walletsInWorkspace(ws.id);
+    const cards = wallets.map(function(w){
+      const bal = walletBalance(w.id);
+      const inBase = w.currency!==S.baseCurrency ? '<div class="stat-sub mono">≈ '+fmtMoney(toBase(bal,w.currency))+'</div>' : '';
+      return '<div class="card" style="border-top:3px solid '+accentFor(w.type)+';cursor:pointer;" onclick="go(\'transactions\');window.__txWalletFilter=\''+w.id+'\';render();">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+          '<div><div style="font-weight:700;">'+escapeHtml(w.name)+'</div><div class="muted" style="font-size:12px;">'+w.type+' · '+w.currency+'</div></div>' +
+          (canEdit()?'<div class="icon-btn" style="width:30px;height:30px;" onclick="event.stopPropagation();openWalletModal(\''+w.id+'\')">'+iconSvg('pencil')+'</div>':'') +
+        '</div>' +
+        '<div class="stat-value mono '+(S.showBalances?'':'blur-balance')+'" style="margin-top:14px;">'+fmtMoney(bal, w.currency)+'</div>' +
+        inBase +
+      '</div>';
+    }).join('');
+    return '<div style="margin-bottom:22px;">' +
+      (multiWs ? '<h4 style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">'+iconSvg(ws.icon||'briefcase')+escapeHtml(ws.name)+'</h4>' : '') +
+      '<div class="grid grid-3">' + (cards || '<div class="empty">'+iconSvg('wallet')+'<div>No wallets in this workspace yet.</div></div>') + '</div>' +
     '</div>';
   }).join('');
   return '' +
-  '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;">' + (canEdit()?'<span class="btn btn-primary btn-sm" onclick="openAccountModal()">'+iconSvg('plus')+' Add Account</span>':'') + '</div>' +
-  '<div class="grid grid-3">' + (cards || '<div class="empty">'+iconSvg('wallet')+'<div>No accounts yet — add your first one.</div></div>') + '</div>';
+  '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;">' + (canEdit()?'<span class="btn btn-primary btn-sm" onclick="openWalletModal()">'+iconSvg('plus')+' Add Wallet</span>':'') + '</div>' +
+  (sections || '<div class="empty">'+iconSvg('wallet')+'<div>No workspaces selected.</div></div>');
 }
-function openAccountModal(id){
-  const a = id ? S.data.Accounts.find(function(x){return x.id===id;}) : { name:'', type:'Personal', currency:S.baseCurrency, openingBalance:0, status:'Active' };
-  const types = ['Personal','Business','Family','Project','Savings','Investment','Debt','Crypto','Other'];
+function workspaceSelectOptions(selected){
+  return accessibleWorkspaces().map(function(ws){ return '<option value="'+ws.id+'" '+(selected===ws.id?'selected':'')+'>'+escapeHtml(ws.name)+'</option>'; }).join('');
+}
+function openWalletModal(id){
+  const w = id ? S.data.Wallets.find(function(x){return x.id===id;}) : { workspaceId: S.selectedWorkspaces[0]||(accessibleWorkspaces()[0]?accessibleWorkspaces()[0].id:''), name:'', type:'Bank', currency:S.baseCurrency, openingBalance:0, status:'Active' };
+  const types = ['Cash','Bank','Mobile Money','Card','Crypto','Savings','Investment','Debt','Other'];
   openModal('' +
-    '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Account</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
-    '<div class="field"><label>Name</label><input id="fName" value="'+escapeHtml(a.name)+'" placeholder="e.g. Main Business Account"></div>' +
-    '<div class="field-row"><div class="field"><label>Type</label><select id="fType">'+types.map(function(t){return '<option '+(a.type===t?'selected':'')+'>'+t+'</option>';}).join('')+'</select></div>' +
-    '<div class="field"><label>Currency</label><select id="fCurrency">'+CURRENCIES.map(function(c){return '<option '+(a.currency===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select></div></div>' +
-    '<div class="field"><label>Opening Balance</label><input type="number" step="0.01" id="fOpening" value="'+a.openingBalance+'"></div>' +
+    '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Wallet</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div class="field"><label>Workspace</label><select id="fWorkspace">'+workspaceSelectOptions(w.workspaceId)+'</select></div>' +
+    '<div class="field"><label>Name</label><input id="fName" value="'+escapeHtml(w.name)+'" placeholder="e.g. Access Bank, MTN MoMo, Petty Cash"></div>' +
+    '<div class="field-row"><div class="field"><label>Type</label><select id="fType">'+types.map(function(t){return '<option '+(w.type===t?'selected':'')+'>'+t+'</option>';}).join('')+'</select></div>' +
+    '<div class="field"><label>Currency</label><select id="fCurrency">'+CURRENCIES.map(function(c){return '<option '+(w.currency===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select></div></div>' +
+    '<div class="field"><label>Opening Balance</label><input type="number" step="0.01" id="fOpening" value="'+w.openingBalance+'"></div>' +
     '<div style="display:flex;gap:10px;margin-top:8px;">' +
-      (id?'<span class="btn btn-danger" onclick="if(confirm(\'Delete this account and keep its transactions?\')){localDelete(\'Accounts\',\''+id+'\');closeModal();}">'+iconSvg('trash-2')+'</span>':'') +
-      '<span class="btn btn-primary btn-block" onclick="saveAccountModal(\''+(id||'')+'\')">Save</span></div>'
+      (id?'<span class="btn btn-danger" onclick="if(confirm(\'Delete this wallet and keep its transactions?\')){localDelete(\'Wallets\',\''+id+'\');closeModal();}">'+iconSvg('trash-2')+'</span>':'') +
+      '<span class="btn btn-primary btn-block" onclick="saveWalletModal(\''+(id||'')+'\')">Save</span></div>'
   );
 }
-function saveAccountModal(id){
-  const data = { name: document.getElementById('fName').value.trim(), type: document.getElementById('fType').value, currency: document.getElementById('fCurrency').value, openingBalance: Number(document.getElementById('fOpening').value||0), status:'Active' };
+function saveWalletModal(id){
+  const data = { workspaceId: document.getElementById('fWorkspace').value, name: document.getElementById('fName').value.trim(), type: document.getElementById('fType').value, currency: document.getElementById('fCurrency').value, openingBalance: Number(document.getElementById('fOpening').value||0), status:'Active' };
   if (!data.name) return toast('Name is required', 'error');
-  if (id) localUpdate('Accounts', id, data); else localCreate('Accounts', data);
+  if (id) localUpdate('Wallets', id, data); else localCreate('Wallets', data);
   closeModal();
+}
+
+/* ---------------------------------------------------------------------
+   WORKSPACES (create / rename / delete)
+   --------------------------------------------------------------------- */
+function renderWorkspaces(){
+  const rows = accessibleWorkspaces().map(function(ws){
+    const walletCount = walletsInWorkspace(ws.id).length;
+    return '<div class="card" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">' +
+      '<div style="display:flex;align-items:center;gap:12px;"><div style="width:38px;height:38px;border-radius:10px;background:'+(ws.color||'var(--primary)')+';display:flex;align-items:center;justify-content:center;color:#fff;">'+iconSvg(ws.icon||'briefcase')+'</div>' +
+      '<div><div style="font-weight:700;">'+escapeHtml(ws.name)+'</div><div class="muted" style="font-size:12px;">'+walletCount+' wallet(s)</div></div></div>' +
+      (canEdit()?'<div style="display:flex;gap:6px;"><span class="icon-btn" onclick="openWorkspaceModal(\''+ws.id+'\')">'+iconSvg('pencil')+'</span>'+(isOwner()?'<span class="icon-btn" onclick="deleteWorkspaceConfirm(\''+ws.id+'\')">'+iconSvg('trash-2')+'</span>':'')+'</div>':'') +
+    '</div>';
+  }).join('');
+  return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;">' + (canEdit()?'<span class="btn btn-primary btn-sm" onclick="openWorkspaceModal()">'+iconSvg('plus')+' Add Workspace</span>':'') + '</div>' +
+    (rows || '<div class="empty">'+iconSvg('layers')+'<div>No workspaces yet.</div></div>');
+}
+const WORKSPACE_ICONS = ['briefcase','user','users','home','church','graduation-cap','building-2','landmark','heart-handshake','folder'];
+function openWorkspaceModal(id){
+  const ws = id ? S.data.Workspaces.find(function(x){return x.id===id;}) : { name:'', icon:'briefcase', color:'#2563EB' };
+  openModal('' +
+    '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Workspace</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div class="field"><label>Name</label><input id="fName" value="'+escapeHtml(ws.name)+'" placeholder="e.g. Business, Family, Church"></div>' +
+    '<div class="field"><label>Icon</label><div style="display:flex;flex-wrap:wrap;gap:8px;">' +
+      WORKSPACE_ICONS.map(function(ic){ return '<div class="icon-btn" style="'+(ws.icon===ic?'border-color:var(--primary);color:var(--primary);':'')+'" onclick="document.getElementById(\'fIcon\').value=\''+ic+'\';document.querySelectorAll(\'.wsicon-pick\').forEach(function(e){e.style.borderColor=\'var(--border)\';e.style.color=\'var(--text-2)\';});this.style.borderColor=\'var(--primary)\';this.style.color=\'var(--primary)\';" class="wsicon-pick">'+iconSvg(ic)+'</div>'; }).join('') +
+    '</div><input type="hidden" id="fIcon" value="'+ws.icon+'"></div>' +
+    '<div class="field"><label>Color</label><input type="color" id="fColor" value="'+(ws.color||'#2563EB')+'" style="height:44px;padding:4px;"></div>' +
+    '<div style="display:flex;gap:10px;margin-top:8px;"><span class="btn btn-primary btn-block" onclick="saveWorkspaceModal(\''+(id||'')+'\')">Save</span></div>'
+  );
+}
+function saveWorkspaceModal(id){
+  const data = { name: document.getElementById('fName').value.trim(), icon: document.getElementById('fIcon').value, color: document.getElementById('fColor').value };
+  if (!data.name) return toast('Name is required', 'error');
+  if (id) localUpdateWorkspace(id, data); else localCreateWorkspace(data);
+  closeModal();
+}
+function deleteWorkspaceConfirm(id){
+  if (walletsInWorkspace(id).length) return toast('Delete or move this workspace\'s wallets first', 'error');
+  if (!confirm('Delete this workspace and all its budgets, goals, loans, and preferences? Wallets/transactions are unaffected since there are none.')) return;
+  localDeleteWorkspace(id);
 }
 
 /* ---------------------------------------------------------------------
    BUDGETS
    --------------------------------------------------------------------- */
 function renderBudgets(){
-  const cards = S.data.Budgets.map(function(b){
+  const multiWs = S.selectedWorkspaces.length > 1;
+  const cards = S.data.Budgets.filter(function(b){return inScope(b.workspaceId);}).map(function(b){
     const spent = budgetSpent(b); const pct = b.monthlyLimit? Math.min(100,(spent/Number(b.monthlyLimit))*100):0;
     return '<div class="card">' +
       '<div style="display:flex;justify-content:space-between;"><div style="font-weight:700;">'+escapeHtml(b.category)+'</div>' +
       (canEdit()?'<div class="icon-btn" style="width:28px;height:28px;" onclick="openBudgetModal(\''+b.id+'\')">'+iconSvg('pencil')+'</div>':'')+'</div>' +
-      '<div class="muted" style="font-size:12px;margin-bottom:10px;">'+(S.data.Accounts.find(function(a){return a.id===b.account;})?.name || 'All accounts')+'</div>' +
+      '<div class="muted" style="font-size:12px;margin-bottom:10px;">'+(walletName(b.wallet)!=='—'?walletName(b.wallet)+' · ':'All wallets · ')+wsName(b.workspaceId)+'</div>' +
       '<div class="progress-track"><div class="progress-fill" style="width:'+pct+'%;background:'+(pct>=100?'var(--danger)':pct>=85?'var(--warning)':'var(--primary)')+'"></div></div>' +
       '<div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12.5px;" class="mono"><span>'+fmtMoney(spent)+' spent</span><span class="muted">of '+fmtMoney(b.monthlyLimit)+'</span></div>' +
     '</div>';
@@ -1068,19 +1248,21 @@ function renderBudgets(){
     '<div class="grid grid-3">' + (cards || '<div class="empty">'+iconSvg('pie-chart')+'<div>No budgets yet. Set a monthly limit per category.</div></div>') + '</div>';
 }
 function openBudgetModal(id){
-  const b = id ? S.data.Budgets.find(function(x){return x.id===id;}) : { category:'', account:'', monthlyLimit:'', notes:'' };
+  const b = id ? S.data.Budgets.find(function(x){return x.id===id;}) : { workspaceId: S.selectedWorkspaces[0]||'', category:'', wallet:'', monthlyLimit:'', notes:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Budget</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
-    '<div class="field"><label>Category</label><select id="fCategory">'+S.data.Categories.filter(function(c){return c.type==='Expense';}).map(function(c){return '<option '+(b.category===c.name?'selected':'')+'>'+escapeHtml(c.name)+'</option>';}).join('')+'</select></div>' +
-    '<div class="field"><label>Account (optional — leave blank for all)</label><select id="fAccount"><option value="">All accounts</option>'+S.data.Accounts.map(function(a){return '<option value="'+a.id+'" '+(b.account===a.id?'selected':'')+'>'+escapeHtml(a.name)+'</option>';}).join('')+'</select></div>' +
+    '<div class="field"><label>Workspace</label><select id="fWorkspace" onchange="refreshBudgetCategory()">'+workspaceSelectOptions(b.workspaceId)+'</select></div>' +
+    '<div class="field"><label>Category</label><select id="fCategory">'+categoryOptions('Expense', b.category, b.workspaceId)+'</select></div>' +
+    '<div class="field"><label>Wallet (optional — leave blank for all wallets in this workspace)</label><select id="fWallet"><option value="">All wallets</option>'+walletsInWorkspace(b.workspaceId).map(function(w){return '<option value="'+w.id+'" '+(b.wallet===w.id?'selected':'')+'>'+escapeHtml(w.name)+'</option>';}).join('')+'</select></div>' +
     '<div class="field"><label>Monthly Limit</label><input type="number" step="0.01" id="fLimit" value="'+b.monthlyLimit+'"></div>' +
     '<div class="field"><label>Notes</label><textarea id="fNotes">'+escapeHtml(b.notes)+'</textarea></div>' +
     '<div style="display:flex;gap:10px;">' + (id?'<span class="btn btn-danger" onclick="localDelete(\'Budgets\',\''+id+'\');closeModal();">'+iconSvg('trash-2')+'</span>':'') +
     '<span class="btn btn-primary btn-block" onclick="saveBudgetModal(\''+(id||'')+'\')">Save</span></div>'
   );
 }
+function refreshBudgetCategory(){ document.getElementById('fCategory').innerHTML = categoryOptions('Expense', '', document.getElementById('fWorkspace').value); }
 function saveBudgetModal(id){
-  const data = { category: document.getElementById('fCategory').value, account: document.getElementById('fAccount').value, monthlyLimit: Number(document.getElementById('fLimit').value||0), notes: document.getElementById('fNotes').value };
+  const data = { workspaceId: document.getElementById('fWorkspace').value, category: document.getElementById('fCategory').value, wallet: document.getElementById('fWallet').value, monthlyLimit: Number(document.getElementById('fLimit').value||0), notes: document.getElementById('fNotes').value };
   if (id) localUpdate('Budgets', id, data); else localCreate('Budgets', data);
   closeModal();
 }
@@ -1089,12 +1271,13 @@ function saveBudgetModal(id){
    GOALS & PLANNING
    --------------------------------------------------------------------- */
 function renderGoals(){
-  const cards = S.data.Goals.map(function(g){
+  const cards = S.data.Goals.filter(function(g){return inScope(g.workspaceId);}).map(function(g){
     const pct = g.targetAmount? Math.min(100,(Number(g.currentAmount||0)/Number(g.targetAmount))*100) : 0;
     return '<div class="card">' +
       '<div style="display:flex;justify-content:space-between;"><div><div style="font-weight:700;">'+escapeHtml(g.name)+'</div><span class="pill pill-neutral">'+g.kind+'</span></div>' +
       (canEdit()?'<div class="icon-btn" style="width:28px;height:28px;" onclick="openGoalModal(\''+g.id+'\')">'+iconSvg('pencil')+'</div>':'')+'</div>' +
-      '<div class="progress-track" style="margin-top:12px;"><div class="progress-fill" style="width:'+pct+'%;background:var(--success);"></div></div>' +
+      '<div class="muted" style="font-size:11.5px;margin:4px 0;">'+wsName(g.workspaceId)+'</div>' +
+      '<div class="progress-track" style="margin-top:8px;"><div class="progress-fill" style="width:'+pct+'%;background:var(--success);"></div></div>' +
       '<div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12.5px;" class="mono"><span>'+fmtMoney(g.currentAmount)+'</span><span class="muted">of '+fmtMoney(g.targetAmount)+'</span></div>' +
       (g.deadline?'<div class="muted" style="font-size:11.5px;margin-top:6px;">Target: '+fmtDate(g.deadline)+'</div>':'') +
     '</div>';
@@ -1103,9 +1286,10 @@ function renderGoals(){
     '<div class="grid grid-3">' + (cards || '<div class="empty">'+iconSvg('target')+'<div>No goals yet. Add a Savings Goal or Planning Budget.</div></div>') + '</div>';
 }
 function openGoalModal(id){
-  const g = id ? S.data.Goals.find(function(x){return x.id===id;}) : { name:'', account:'', kind:'Savings Goal', targetAmount:'', currentAmount:0, deadline:'', notes:'' };
+  const g = id ? S.data.Goals.find(function(x){return x.id===id;}) : { workspaceId: S.selectedWorkspaces[0]||'', name:'', wallet:'', kind:'Savings Goal', targetAmount:'', currentAmount:0, deadline:'', notes:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Goal</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div class="field"><label>Workspace</label><select id="fWorkspace">'+workspaceSelectOptions(g.workspaceId)+'</select></div>' +
     '<div class="field"><label>Name</label><input id="fName" value="'+escapeHtml(g.name)+'" placeholder="e.g. House Construction"></div>' +
     '<div class="field"><label>Kind</label><select id="fKind">' + ['Savings Goal','Planning Budget'].map(function(k){return '<option '+(g.kind===k?'selected':'')+'>'+k+'</option>';}).join('') + '</select></div>' +
     '<div class="field-row"><div class="field"><label>Target Amount</label><input type="number" step="0.01" id="fTarget" value="'+g.targetAmount+'"></div>' +
@@ -1117,7 +1301,7 @@ function openGoalModal(id){
   );
 }
 function saveGoalModal(id){
-  const data = { name: document.getElementById('fName').value.trim(), kind: document.getElementById('fKind').value, targetAmount: Number(document.getElementById('fTarget').value||0), currentAmount: Number(document.getElementById('fCurrent').value||0), deadline: document.getElementById('fDeadline').value, notes: document.getElementById('fNotes').value };
+  const data = { workspaceId: document.getElementById('fWorkspace').value, name: document.getElementById('fName').value.trim(), kind: document.getElementById('fKind').value, targetAmount: Number(document.getElementById('fTarget').value||0), currentAmount: Number(document.getElementById('fCurrent').value||0), deadline: document.getElementById('fDeadline').value, notes: document.getElementById('fNotes').value };
   if (!data.name) return toast('Name is required', 'error');
   if (id) localUpdate('Goals', id, data); else localCreate('Goals', data);
   closeModal();
@@ -1127,12 +1311,12 @@ function saveGoalModal(id){
    LOANS
    --------------------------------------------------------------------- */
 function renderLoans(){
-  const rows = S.data.Loans.map(function(l){
+  const rows = S.data.Loans.filter(function(l){return inScope(l.workspaceId);}).map(function(l){
     const out = loanOutstanding(l.id);
     return '<div class="card" style="margin-bottom:12px;">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
         '<div><span class="pill '+(l.direction==='Lent'?'pill-success':'pill-danger')+'">'+l.direction+'</span> <span style="font-weight:700;margin-left:6px;">'+escapeHtml(l.counterparty)+'</span>' +
-        '<div class="muted" style="font-size:12px;margin-top:4px;">Principal '+fmtMoney(l.principal, l.currency)+' · '+(l.interestRate?l.interestRate+'% (info only)':'no interest')+' · due '+fmtDate(l.dueDate)+'</div></div>' +
+        '<div class="muted" style="font-size:12px;margin-top:4px;">'+wsName(l.workspaceId)+' · Principal '+fmtMoney(l.principal, l.currency)+' · '+(l.interestRate?l.interestRate+'% (info only)':'no interest')+' · due '+fmtDate(l.dueDate)+'</div></div>' +
         '<div style="display:flex;gap:6px;">' + (canEdit()?'<span class="icon-btn" style="width:30px;height:30px;" onclick="openLoanPaymentModal(\''+l.id+'\')">'+iconSvg('plus')+'</span><span class="icon-btn" style="width:30px;height:30px;" onclick="openLoanModal(\''+l.id+'\')">'+iconSvg('pencil')+'</span>':'') + '</div>' +
       '</div>' +
       '<div class="mono" style="margin-top:10px;font-weight:700;font-size:17px;">'+fmtMoney(out, l.currency)+' <span class="muted" style="font-weight:400;font-size:12px;">outstanding</span></div>' +
@@ -1144,9 +1328,10 @@ function renderLoans(){
     (rows || '<div class="empty">'+iconSvg('handshake')+'<div>No loans tracked yet.</div></div>');
 }
 function openLoanModal(id){
-  const l = id ? S.data.Loans.find(function(x){return x.id===id;}) : { direction:'Lent', counterparty:'', principal:'', currency:S.baseCurrency, interestRate:'', startDate:todayISO(), dueDate:'', status:'Open', notes:'' };
+  const l = id ? S.data.Loans.find(function(x){return x.id===id;}) : { workspaceId: S.selectedWorkspaces[0]||'', direction:'Lent', counterparty:'', principal:'', currency:S.baseCurrency, interestRate:'', startDate:todayISO(), dueDate:'', status:'Open', notes:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Loan</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div class="field"><label>Workspace</label><select id="fWorkspace">'+workspaceSelectOptions(l.workspaceId)+'</select></div>' +
     '<div class="field"><label>Direction</label><select id="fDirection">'+['Lent','Borrowed'].map(function(d){return '<option '+(l.direction===d?'selected':'')+'>'+d+'</option>';}).join('')+'</select></div>' +
     '<div class="field"><label>Counterparty</label><input id="fCounterparty" value="'+escapeHtml(l.counterparty)+'" placeholder="Name"></div>' +
     '<div class="field-row"><div class="field"><label>Principal</label><input type="number" step="0.01" id="fPrincipal" value="'+l.principal+'"></div>' +
@@ -1160,7 +1345,7 @@ function openLoanModal(id){
   );
 }
 function saveLoanModal(id){
-  const data = { direction: document.getElementById('fDirection').value, counterparty: document.getElementById('fCounterparty').value.trim(), principal: Number(document.getElementById('fPrincipal').value||0), currency: document.getElementById('fCurrency').value, interestRate: Number(document.getElementById('fRate').value||0), dueDate: document.getElementById('fDue').value, status: document.getElementById('fStatus').value, notes: document.getElementById('fNotes').value, startDate: todayISO() };
+  const data = { workspaceId: document.getElementById('fWorkspace').value, direction: document.getElementById('fDirection').value, counterparty: document.getElementById('fCounterparty').value.trim(), principal: Number(document.getElementById('fPrincipal').value||0), currency: document.getElementById('fCurrency').value, interestRate: Number(document.getElementById('fRate').value||0), dueDate: document.getElementById('fDue').value, status: document.getElementById('fStatus').value, notes: document.getElementById('fNotes').value, startDate: todayISO() };
   if (!data.counterparty) return toast('Counterparty is required', 'error');
   if (id) localUpdate('Loans', id, data); else localCreate('Loans', data);
   closeModal();
@@ -1186,13 +1371,13 @@ function saveLoanPayment(loanId){
    --------------------------------------------------------------------- */
 function renderInvestments(){
   const sum = investmentSummary();
-  const rows = S.data.Investments.map(function(i){
-    const acc = S.data.Accounts.find(function(a){return a.id===i.account;});
+  const rows = S.data.Investments.filter(function(i){return inScope(i.workspaceId);}).map(function(i){
+    const w = S.data.Wallets.find(function(a){return a.id===i.wallet;});
     const gain = Number(i.currentValue||0) - Number(i.amountInvested||0);
     return '<tr class="row-hover">' +
-      '<td data-label="Name">'+escapeHtml(i.name)+'</td><td data-label="Type">'+escapeHtml(i.assetType)+'</td><td data-label="Account">'+(acc?escapeHtml(acc.name):'—')+'</td>' +
-      '<td data-label="Invested" class="mono">'+fmtMoney(i.amountInvested, acc?acc.currency:'')+'</td><td data-label="Current" class="mono">'+fmtMoney(i.currentValue, acc?acc.currency:'')+'</td>' +
-      '<td data-label="Gain/Loss" class="mono" style="color:'+(gain>=0?'var(--success)':'var(--danger)')+';font-weight:700;">'+(gain>=0?'+':'')+fmtMoney(gain, acc?acc.currency:'')+'</td>' +
+      '<td data-label="Name">'+escapeHtml(i.name)+'</td><td data-label="Type">'+escapeHtml(i.assetType)+'</td><td data-label="Wallet">'+(w?escapeHtml(w.name):'—')+'</td>' +
+      '<td data-label="Invested" class="mono">'+fmtMoney(i.amountInvested, w?w.currency:'')+'</td><td data-label="Current" class="mono">'+fmtMoney(i.currentValue, w?w.currency:'')+'</td>' +
+      '<td data-label="Gain/Loss" class="mono" style="color:'+(gain>=0?'var(--success)':'var(--danger)')+';font-weight:700;">'+(gain>=0?'+':'')+fmtMoney(gain, w?w.currency:'')+'</td>' +
       '<td data-label="">'+(canEdit()?'<div class="icon-btn" style="width:30px;height:30px;" onclick="openInvestmentModal(\''+i.id+'\')">'+iconSvg('pencil')+'</div>':'')+'</td>' +
     '</tr>';
   }).join('');
@@ -1203,15 +1388,16 @@ function renderInvestments(){
     statCard('Gain / Loss', (sum.gain>=0?'+':'')+fmtMoney(sum.gain), sum.cost?((sum.gain/sum.cost)*100).toFixed(1)+'% return':'', S.showBalances?'':'blur-balance') +
   '</div>' +
   '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;">' + (canEdit()?'<span class="btn btn-primary btn-sm" onclick="openInvestmentModal()">'+iconSvg('plus')+' Add Investment</span>':'') + '</div>' +
-  '<div class="card" style="padding:8px 20px;">' + (rows ? '<table class="responsive-table"><thead><tr><th>Name</th><th>Type</th><th>Account</th><th>Invested</th><th>Current</th><th>Gain/Loss</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>' : '<div class="empty">'+iconSvg('trending-up')+'<div>No investments tracked yet.</div></div>') + '</div>';
+  '<div class="card" style="padding:8px 20px;">' + (rows ? '<table class="responsive-table"><thead><tr><th>Name</th><th>Type</th><th>Wallet</th><th>Invested</th><th>Current</th><th>Gain/Loss</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>' : '<div class="empty">'+iconSvg('trending-up')+'<div>No investments tracked yet.</div></div>') + '</div>';
 }
 function openInvestmentModal(id){
-  const i = id ? S.data.Investments.find(function(x){return x.id===id;}) : { name:'', assetType:'', account: S.data.Accounts[0]?S.data.Accounts[0].id:'', amountInvested:'', currentValue:'', date:todayISO(), notes:'' };
+  const defaultWallet = walletsInSelected()[0];
+  const i = id ? S.data.Investments.find(function(x){return x.id===id;}) : { name:'', assetType:'', wallet: defaultWallet?defaultWallet.id:'', amountInvested:'', currentValue:'', date:todayISO(), notes:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Investment</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
     '<div class="field"><label>Name</label><input id="fName" value="'+escapeHtml(i.name)+'" placeholder="e.g. T-Bills, Real Estate Plot"></div>' +
     '<div class="field-row"><div class="field"><label>Asset Type</label><input id="fAssetType" value="'+escapeHtml(i.assetType)+'" placeholder="e.g. Bonds, Stocks, Property"></div>' +
-    '<div class="field"><label>Account</label><select id="fAccount">'+S.data.Accounts.map(function(a){return '<option value="'+a.id+'" '+(i.account===a.id?'selected':'')+'>'+escapeHtml(a.name)+'</option>';}).join('')+'</select></div></div>' +
+    '<div class="field"><label>Wallet</label><select id="fWallet">'+walletOptionsGrouped(i.wallet)+'</select></div></div>' +
     '<div class="field-row"><div class="field"><label>Amount Invested</label><input type="number" step="0.01" id="fInvested" value="'+i.amountInvested+'"></div>' +
     '<div class="field"><label>Current Value</label><input type="number" step="0.01" id="fCurrentValue" value="'+i.currentValue+'"></div></div>' +
     '<div class="field"><label>Date</label><input type="date" id="fDate" value="'+i.date+'"></div>' +
@@ -1221,7 +1407,9 @@ function openInvestmentModal(id){
   );
 }
 function saveInvestmentModal(id){
-  const data = { name: document.getElementById('fName').value.trim(), assetType: document.getElementById('fAssetType').value, account: document.getElementById('fAccount').value, amountInvested: Number(document.getElementById('fInvested').value||0), currentValue: Number(document.getElementById('fCurrentValue').value||0), date: document.getElementById('fDate').value, notes: document.getElementById('fNotes').value };
+  const walletId = document.getElementById('fWallet').value;
+  const w = S.data.Wallets.find(function(a){return a.id===walletId;});
+  const data = { name: document.getElementById('fName').value.trim(), assetType: document.getElementById('fAssetType').value, wallet: walletId, workspaceId: w?w.workspaceId:'', amountInvested: Number(document.getElementById('fInvested').value||0), currentValue: Number(document.getElementById('fCurrentValue').value||0), date: document.getElementById('fDate').value, notes: document.getElementById('fNotes').value };
   if (!data.name) return toast('Name is required', 'error');
   if (id) localUpdate('Investments', id, data); else localCreate('Investments', data);
   closeModal();
@@ -1231,8 +1419,11 @@ function saveInvestmentModal(id){
    SCALE OF PREFERENCE
    --------------------------------------------------------------------- */
 function renderPreference(){
-  const items = S.data.Preferences.slice().sort(function(a,b){ return Number(a.rank)-Number(b.rank); });
-  const budgetInput = window.__prefBudget != null ? window.__prefBudget : (window.__prefBudget = Number(localStorage.getItem('ledger_pref_budget')||0));
+  window.__prefWorkspace = window.__prefWorkspace && inScope(window.__prefWorkspace) ? window.__prefWorkspace : S.selectedWorkspaces[0];
+  const wsId = window.__prefWorkspace;
+  const items = S.data.Preferences.filter(function(p){return p.workspaceId===wsId;}).sort(function(a,b){ return Number(a.rank)-Number(b.rank); });
+  const budgetKey = 'ledger_pref_budget_'+wsId;
+  const budgetInput = window.__prefBudget != null ? window.__prefBudget : (window.__prefBudget = Number(localStorage.getItem(budgetKey)||0));
   let running = 0, cutoffIndex = -1;
   items.forEach(function(it,idx){ running += Number(it.estimatedCost||0); if (cutoffIndex===-1 && running>budgetInput) cutoffIndex = idx; });
   const rows = items.map(function(it, idx){
@@ -1253,13 +1444,15 @@ function renderPreference(){
   }).join('');
   return '' +
   '<div class="card" style="margin-bottom:16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">' +
-    '<div class="field" style="margin-bottom:0;flex:1;min-width:180px;"><label>Available Budget</label><input type="number" step="0.01" value="'+budgetInput+'" oninput="window.__prefBudget=Number(this.value||0);localStorage.setItem(\'ledger_pref_budget\',this.value);render();"></div>' +
+    '<div class="field" style="margin-bottom:0;min-width:200px;"><label>Workspace</label><select onchange="window.__prefWorkspace=this.value;window.__prefBudget=null;render();">'+workspaceSelectOptions(wsId)+'</select></div>' +
+    '<div class="field" style="margin-bottom:0;flex:1;min-width:180px;"><label>Available Budget</label><input type="number" step="0.01" value="'+budgetInput+'" oninput="window.__prefBudget=Number(this.value||0);localStorage.setItem(\''+budgetKey+'\',this.value);render();"></div>' +
     (canEdit()?'<span class="btn btn-primary" onclick="openPrefModal()">'+iconSvg('plus')+' Add Item</span>':'') +
   '</div>' +
   (rows || '<div class="empty">'+iconSvg('list-ordered')+'<div>Add wants and needs, rank them, then set a budget to see what\'s funded.</div></div>');
 }
 function movePref(id, dir){
-  const items = S.data.Preferences.slice().sort(function(a,b){ return Number(a.rank)-Number(b.rank); });
+  const wsId = window.__prefWorkspace;
+  const items = S.data.Preferences.filter(function(p){return p.workspaceId===wsId;}).sort(function(a,b){ return Number(a.rank)-Number(b.rank); });
   const idx = items.findIndex(function(i){return i.id===id;});
   const swapIdx = idx+dir;
   if (swapIdx<0 || swapIdx>=items.length) return;
@@ -1269,8 +1462,9 @@ function movePref(id, dir){
   localUpdate('Preferences', b.id, { rank: rankA });
 }
 function openPrefModal(id){
-  const items = S.data.Preferences;
-  const it = id ? items.find(function(x){return x.id===id;}) : { item:'', category:'Need', rank: items.length, estimatedCost:'', notes:'' };
+  const wsId = window.__prefWorkspace;
+  const items = S.data.Preferences.filter(function(p){return p.workspaceId===wsId;});
+  const it = id ? items.find(function(x){return x.id===id;}) : { workspaceId: wsId, item:'', category:'Need', rank: items.length, estimatedCost:'', notes:'' };
   openModal('' +
     '<div class="modal-head"><h3>'+(id?'Edit':'Add')+' Item</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
     '<div class="field"><label>Item</label><input id="fItem" value="'+escapeHtml(it.item)+'" placeholder="e.g. New laptop"></div>' +
@@ -1282,9 +1476,9 @@ function openPrefModal(id){
   );
 }
 function savePrefModal(id){
-  const data = { item: document.getElementById('fItem').value.trim(), category: document.getElementById('fCat').value, estimatedCost: Number(document.getElementById('fCost').value||0), notes: document.getElementById('fNotes').value };
+  const data = { workspaceId: window.__prefWorkspace, item: document.getElementById('fItem').value.trim(), category: document.getElementById('fCat').value, estimatedCost: Number(document.getElementById('fCost').value||0), notes: document.getElementById('fNotes').value };
   if (!data.item) return toast('Item name is required', 'error');
-  if (id) localUpdate('Preferences', id, data); else { data.rank = S.data.Preferences.length; localCreate('Preferences', data); }
+  if (id) localUpdate('Preferences', id, data); else { data.rank = S.data.Preferences.filter(function(p){return p.workspaceId===window.__prefWorkspace;}).length; localCreate('Preferences', data); }
   closeModal();
 }
 
@@ -1295,7 +1489,7 @@ function renderInsights(){
   const list = generateInsights();
   return '' +
   '<div class="card" style="margin-bottom:16px;background:var(--surface-2);border:none;"><div style="display:flex;gap:10px;align-items:center;">'+iconSvg('info')+
-  '<span style="font-size:13px;">These insights are simple rule-based checks on your own data (month-over-month %, budget thresholds, upcoming dates). There is no AI or machine learning involved.</span></div></div>' +
+  '<span style="font-size:13px;">These insights are simple rule-based checks on your own data (month-over-month %, budget thresholds, upcoming dates), scoped to the workspace(s) you have selected. There is no AI or machine learning involved.</span></div></div>' +
   (list.length ? list.map(function(a){
     return '<div class="card" style="margin-bottom:10px;display:flex;gap:12px;align-items:flex-start;border-left:3px solid '+levelColor(a.level)+';">' +
       iconSvg(a.level==='danger'?'alert-circle':a.level==='warning'?'alert-triangle':a.level==='success'?'check-circle':'circle') +
@@ -1308,7 +1502,7 @@ function renderInsights(){
    --------------------------------------------------------------------- */
 function renderReports(){
   const range = window.__reportRange || (window.__reportRange = { from: todayISO().slice(0,8)+'01', to: todayISO() });
-  const list = S.data.Transactions.filter(function(t){ return t.date>=range.from && t.date<=range.to; });
+  const list = S.data.Transactions.filter(function(t){ return t.date>=range.from && t.date<=range.to && txInScope(t); });
   let income=0, expense=0; const byCat = {};
   list.forEach(function(t){
     if (t.type==='Transfer') return;
@@ -1318,6 +1512,7 @@ function renderReports(){
   const catRows = Object.keys(byCat).sort(function(a,b){return byCat[b]-byCat[a];}).map(function(cat){
     return '<tr><td data-label="Category">'+escapeHtml(cat)+'</td><td data-label="Amount" class="mono">'+fmtMoney(byCat[cat])+'</td><td data-label="% of expense">'+(expense?((byCat[cat]/expense)*100).toFixed(1):'0')+'%</td></tr>';
   }).join('');
+  const scopeLabel = S.selectedWorkspaces.length===accessibleWorkspaces().length ? 'All Workspaces' : S.selectedWorkspaces.map(wsName).join(', ');
   return '' +
   '<div class="card no-print" style="margin-bottom:16px;">' +
     '<div class="field-row" style="align-items:flex-end;">' +
@@ -1327,6 +1522,7 @@ function renderReports(){
       '<span class="btn btn-outline" onclick="exportTxCsv()">'+iconSvg('download')+' CSV</span>' +
     '</div>' +
   '</div>' +
+  '<p class="muted" style="font-size:12.5px;margin:-6px 0 12px;">Scope: '+escapeHtml(scopeLabel)+' — change from the workspace switcher.</p>' +
   '<div class="grid grid-3" style="margin-bottom:16px;">' +
     statCard('Income', fmtMoney(income), range.from+' → '+range.to) +
     statCard('Expense', fmtMoney(expense), '') +
@@ -1338,13 +1534,16 @@ function renderReports(){
 }
 
 /* ---------------------------------------------------------------------
-   PEOPLE (Owner only)
+   PEOPLE (Owner only) — per-workspace access grants
    --------------------------------------------------------------------- */
 function renderPeople(){
   if (!isOwner()) return '<div class="empty">'+iconSvg('lock')+'<div>Only the Owner can manage people.</div></div>';
   const rows = S.data.Users.map(function(u){
+    const grants = (S.data.UserWorkspaceAccess||[]).filter(function(g){return g.userId===u.id;}).map(function(g){return g.workspaceId;});
+    const wsLabel = u.role==='Owner' ? 'All (Owner)' : (S.data.Workspaces.filter(function(w){return grants.indexOf(w.id)>-1;}).map(function(w){return w.name;}).join(', ') || 'None');
     return '<tr class="row-hover"><td data-label="Name">'+escapeHtml(u.name)+'</td><td data-label="Email">'+escapeHtml(u.email)+'</td>' +
       '<td data-label="Role"><select onchange="changeRole(\''+u.id+'\',this.value)" '+(u.email===S.auth.email?'disabled':'')+'>'+['Owner','Editor','Viewer'].map(function(r){return '<option '+(u.role===r?'selected':'')+'>'+r+'</option>';}).join('')+'</select></td>' +
+      '<td data-label="Workspace access">'+escapeHtml(wsLabel)+(u.role!=='Owner'?' <span class="icon-btn" style="width:24px;height:24px;display:inline-flex;" onclick="openWorkspaceAccessModal(\''+u.id+'\')">'+iconSvg('pencil')+'</span>':'')+'</td>' +
       '<td data-label="Last seen">'+(u.lastSeen?fmtDate(u.lastSeen):'never')+'</td>' +
       '<td data-label="">'+(u.email!==S.auth.email?'<span class="icon-btn" style="width:30px;height:30px;" onclick="removePerson(\''+u.id+'\')">'+iconSvg('user-x')+'</span>':'')+'</td></tr>';
   }).join('');
@@ -1353,7 +1552,7 @@ function renderPeople(){
   }).join('');
   return '' +
   '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><span class="btn btn-primary btn-sm" onclick="openInviteModal()">'+iconSvg('user-plus')+' Invite</span></div>' +
-  '<div class="card" style="padding:8px 20px;margin-bottom:16px;"><table class="responsive-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last seen</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+  '<div class="card" style="padding:8px 20px;margin-bottom:16px;"><table class="responsive-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Workspace access</th><th>Last seen</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
   '<div class="card"><h4 style="margin-bottom:10px;">Recent Activity</h4>' + (activity||'<div class="empty">No activity yet.</div>') + '</div>';
 }
 function openInviteModal(){
@@ -1362,13 +1561,17 @@ function openInviteModal(){
     '<div class="field"><label>Name</label><input id="fName" placeholder="Jane Doe"></div>' +
     '<div class="field"><label>Email</label><input id="fEmail" placeholder="jane@example.com"></div>' +
     '<div class="field"><label>Role</label><select id="fRole">'+['Editor','Viewer','Owner'].map(function(r){return '<option>'+r+'</option>';}).join('')+'</select></div>' +
+    '<div class="field"><label>Workspace access</label><div style="display:flex;flex-direction:column;gap:6px;">' +
+      accessibleWorkspaces().map(function(ws){ return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" class="invite-ws" value="'+ws.id+'"> '+escapeHtml(ws.name)+'</label>'; }).join('') +
+    '</div></div>' +
     '<span class="btn btn-primary btn-block" onclick="sendInvite()">Send Invite</span>'
   );
 }
 function sendInvite(){
   const name = document.getElementById('fName').value.trim(), email = document.getElementById('fEmail').value.trim(), role = document.getElementById('fRole').value;
+  const workspaceIds = Array.from(document.querySelectorAll('.invite-ws:checked')).map(function(el){return el.value;});
   if (!name || !email) return toast('Name and email required', 'error');
-  callServer('invite', { name:name, email:email, role:role }).then(function(res){
+  callServer('invite', { name:name, email:email, role:role, workspaceIds:workspaceIds }).then(function(res){
     if (!res.ok) return toast(res.error||'Invite failed', 'error');
     toast('Invited '+email+'. Access code: '+res.accessCode, 'success');
     closeModal(); pullAll();
@@ -1378,6 +1581,23 @@ function changeRole(id, role){
   callServer('updateUserRole', { id:id, role:role }).then(function(res){
     if (!res.ok) return toast(res.error||'Failed', 'error');
     toast('Role updated', 'success'); pullAll();
+  });
+}
+function openWorkspaceAccessModal(userId){
+  const grants = (S.data.UserWorkspaceAccess||[]).filter(function(g){return g.userId===userId;}).map(function(g){return g.workspaceId;});
+  openModal('' +
+    '<div class="modal-head"><h3>Workspace Access</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<div style="display:flex;flex-direction:column;gap:8px;">' +
+      accessibleWorkspaces().map(function(ws){ return '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;"><input type="checkbox" class="access-ws" value="'+ws.id+'" '+(grants.indexOf(ws.id)>-1?'checked':'')+'> '+escapeHtml(ws.name)+'</label>'; }).join('') +
+    '</div>' +
+    '<span class="btn btn-primary btn-block" style="margin-top:14px;" onclick="saveWorkspaceAccess(\''+userId+'\')">Save</span>'
+  );
+}
+function saveWorkspaceAccess(userId){
+  const workspaceIds = Array.from(document.querySelectorAll('.access-ws:checked')).map(function(el){return el.value;});
+  callServer('setWorkspaceAccess', { userId:userId, workspaceIds:workspaceIds }).then(function(res){
+    if (!res.ok) return toast(res.error||'Failed', 'error');
+    toast('Access updated', 'success'); closeModal(); pullAll();
   });
 }
 function removePerson(id){
@@ -1471,16 +1691,19 @@ function eraseLocalCache(){
 function exportXlsxBackup(){
   if (typeof XLSX === 'undefined') return toast('Excel export library failed to load — check your connection', 'error');
   const wb = XLSX.utils.book_new();
-  ENTITIES.forEach(function(e){ XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(S.data[e]||[]), e); });
+  ['Workspaces'].concat(ENTITIES).forEach(function(e){ XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(S.data[e]||[]), e); });
   XLSX.writeFile(wb, 'ledger-backup-'+todayISO()+'.xlsx');
 }
 
 /* ---------------------------------------------------------------------
-   CATEGORIES
+   CATEGORIES (per workspace)
    --------------------------------------------------------------------- */
 function renderCategoriesScreen(){
-  const income = S.data.Categories.filter(function(c){return c.type==='Income';});
-  const expense = S.data.Categories.filter(function(c){return c.type==='Expense';});
+  window.__catWorkspace = window.__catWorkspace && inScope(window.__catWorkspace) ? window.__catWorkspace : S.selectedWorkspaces[0];
+  const wsId = window.__catWorkspace;
+  const all = S.data.Categories.filter(function(c){return c.workspaceId===wsId;});
+  const income = all.filter(function(c){return c.type==='Income';});
+  const expense = all.filter(function(c){return c.type==='Expense';});
   function list(arr){
     return arr.map(function(c){
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);">' +
@@ -1490,6 +1713,7 @@ function renderCategoriesScreen(){
     }).join('') || '<div class="muted" style="padding:10px 0;">None yet.</div>';
   }
   return '' +
+  '<div class="field" style="max-width:280px;margin-bottom:16px;"><label>Workspace</label><select onchange="window.__catWorkspace=this.value;render();">'+workspaceSelectOptions(wsId)+'</select></div>' +
   '<div class="grid grid-2">' +
     '<div class="card"><h4 style="margin-bottom:10px;">Income Categories</h4>'+list(income)+
       (canEdit()?'<span class="btn btn-outline btn-sm" style="margin-top:12px;" onclick="openCategoryModal(\'Income\')">'+iconSvg('plus')+' Add</span>':'')+'</div>' +
@@ -1507,7 +1731,7 @@ function openCategoryModal(type){
 function saveCategoryModal(type){
   const name = document.getElementById('fName').value.trim();
   if (!name) return toast('Name is required', 'error');
-  localCreate('Categories', { name:name, type:type, isDefault:false });
+  localCreate('Categories', { workspaceId: window.__catWorkspace, name:name, type:type, isDefault:false });
   closeModal();
 }
 
@@ -1543,12 +1767,14 @@ function render(){
   const app = document.getElementById('app');
   if (S.pinEnabled && !window.__pinUnlocked) { app.innerHTML = renderPinLock(); safeIcons(); return; }
   if (!S.auth) { app.innerHTML = renderLogin(); safeIcons(); return; }
+  ensureSelectedWorkspaces();
 
   let inner = '';
   switch (S.route) {
     case 'dashboard': inner = renderDashboard(); break;
     case 'transactions': inner = renderTransactions(); break;
-    case 'accounts': inner = renderAccounts(); break;
+    case 'wallets': inner = renderWallets(); break;
+    case 'workspaces': inner = renderWorkspaces(); break;
     case 'categories': inner = renderCategoriesScreen(); break;
     case 'budgets': inner = renderBudgets(); break;
     case 'goals': inner = renderGoals(); break;
@@ -1572,10 +1798,6 @@ window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); 
 
 function init(){
   document.documentElement.setAttribute('data-theme', S.theme);
-  // Insert Categories + a settings-adjacent nav entry once (kept out of main NAV to match spec's screen list; linked from Settings/Budgets flows)
-  if (!NAV.some(function(n){return n.id==='categories';})) {
-    NAV.splice(3, 0, { id:'categories', label:'Categories', icon:'tags' });
-  }
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(function(err){ console.warn('SW registration failed', err); });
   }

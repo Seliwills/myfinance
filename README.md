@@ -1,5 +1,25 @@
 # The Ledger — Setup
 
+## ⚠️ If you already deployed the earlier version
+This update changes the data model from a flat "Accounts" list to a
+**Workspace → Wallet** hierarchy (Personal/Business/Family/… each with
+their own wallets, budgets, goals, loans, and permissions). It is a
+breaking schema change:
+
+- Your existing `Users` tab and login still work fine — no need to
+  re-bootstrap.
+- Your old `Accounts` tab is left untouched but ignored (harmless).
+- Old `Transactions`/`Budgets`/`Goals`/`Loans`/`Preferences`/`Investments`
+  rows have no `workspaceId`, so they won't show up until you either
+  re-enter them or manually add a `workspaceId` column value in the
+  Sheet matching a new workspace's ID.
+- Since you're still early in setup, the simplest path is usually a
+  **fresh Google Sheet** (repeat step 1) rather than migrating old rows
+  by hand. If you'd rather keep what's there, redeploy this `Code.gs`
+  on the same Sheet, log in, create your first Workspace from the new
+  **Workspaces** screen, then re-add wallets and re-enter (or hand-copy)
+  any transactions you need to keep.
+
 ## 1. Backend (Google Sheets + Apps Script)
 1. Create a new Google Sheet.
 2. Extensions → Apps Script. Delete the default code, paste in `Code.gs`.
@@ -21,9 +41,12 @@ Cloudflare Pages, or any static file host — all free, no build step).
 ## 3. First login
 Open the hosted site → "First-time setup" tab → enter the Server URL,
 your name, your email, and the `ADMIN_CODE`. This makes you the Owner
-and creates all the sheet tabs automatically. From then on, invite
-others from **People** — they log in with the Server URL + their email
-+ the access code you send them.
+and creates all the sheet tabs automatically, including a starter
+"Personal" workspace. Add more workspaces (Business, Family, Church,
+etc.) any time from the **Workspaces** screen. From then on, invite
+others from **People** — you'll choose which workspaces each person can
+see, and they log in with the Server URL + their email + the access
+code you send them.
 
 ## 4. Install as an app
 On phone: open the site in Chrome/Safari → "Add to Home Screen".

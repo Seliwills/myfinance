@@ -3,6 +3,15 @@
  * Deploy as Web App (Execute as: Me, Access: Anyone with the link).
  * The bound Spreadsheet is the database. No other backend is used.
  *
+ * ARCHITECTURE
+ * Workspace (Personal / Business / Family / Church / …)
+ *   └── Wallet (Cash / Bank / Mobile Money / Card / …)
+ *         └── Transactions, Transfers, Budgets, Goals, Loans, Investments
+ * Every financial record belongs to exactly one Workspace (directly or,
+ * for Transactions, via its Wallet). Users are granted access to specific
+ * Workspaces individually — the Owner always has access to all of them
+ * and can grant/revoke access to everyone else.
+ *
  * SETUP
  * 1. Create a new Google Sheet.
  * 2. Extensions > Apps Script, paste this file as Code.gs.
@@ -10,8 +19,7 @@
  * 4. Deploy > New deployment > Web app. Execute as "Me", Access "Anyone".
  * 5. Copy the /exec URL into the frontend's login screen as the "Server URL".
  * 6. First login uses that URL + your name + your email + the ADMIN_CODE
- *    to bootstrap you as Owner. Everyone after that logs in with an
- *    access code you send them from the People screen.
+ *    to bootstrap you as Owner (with access to every workspace you create).
  */
 
 // ----------------------------------------------------------------------
@@ -19,17 +27,19 @@
 // ----------------------------------------------------------------------
 
 const SHEETS = {
-  Transactions: ['id','date','type','account','category','amount','currency','description','tags','recurring','nextDueDate','receiptUrl','transferId','transferPeer','createdBy','createdAt'],
-  Accounts: ['id','name','type','currency','openingBalance','status','createdAt'],
-  Categories: ['id','name','type','isDefault'],
-  Budgets: ['id','category','account','monthlyLimit','notes'],
-  Goals: ['id','name','account','kind','targetAmount','currentAmount','deadline','notes'],
-  Loans: ['id','direction','counterparty','principal','currency','interestRate','startDate','dueDate','status','notes'],
+  Workspaces: ['id','name','icon','color','createdAt'],
+  Wallets: ['id','workspaceId','name','type','currency','openingBalance','status','createdAt'],
+  Transactions: ['id','workspaceId','wallet','type','category','amount','currency','date','description','tags','recurring','nextDueDate','receiptUrl','transferId','transferPeer','createdBy','createdAt'],
+  Categories: ['id','workspaceId','name','type','isDefault'],
+  Budgets: ['id','workspaceId','category','wallet','monthlyLimit','notes'],
+  Goals: ['id','workspaceId','name','wallet','kind','targetAmount','currentAmount','deadline','notes'],
+  Loans: ['id','workspaceId','direction','counterparty','principal','currency','interestRate','startDate','dueDate','status','notes'],
   LoanPayments: ['id','loanId','date','amount','notes'],
   ExchangeRates: ['id','fromCurrency','toCurrency','rate','updatedAt'],
-  Preferences: ['id','item','category','rank','estimatedCost','notes'],
-  Investments: ['id','name','assetType','account','amountInvested','currentValue','date','notes'],
+  Preferences: ['id','workspaceId','item','category','rank','estimatedCost','notes'],
+  Investments: ['id','workspaceId','name','assetType','wallet','amountInvested','currentValue','date','notes'],
   Users: ['id','name','email','code','role','invitedAt','lastSeen'],
+  UserWorkspaceAccess: ['id','userId','workspaceId'],
   ActivityLog: ['id','email','action','detail','timestamp']
 };
 
@@ -50,11 +60,8 @@ function doGet(e) {
 
 function doPost(e) {
   let body;
-  try {
-    body = JSON.parse(e.postData.contents);
-  } catch (err) {
-    return jsonOut({ ok: false, error: 'Bad request body' });
-  }
+  try { body = JSON.parse(e.postData.contents); }
+  catch (err) { return jsonOut({ ok: false, error: 'Bad request body' }); }
 
   const action = body.action;
   try {
@@ -64,8 +71,12 @@ function doPost(e) {
       case 'login': return jsonOut(login_(body));
       case 'invite': return jsonOut(withAuth_(body, 'Owner', invite_));
       case 'updateUserRole': return jsonOut(withAuth_(body, 'Owner', updateUserRole_));
+      case 'setWorkspaceAccess': return jsonOut(withAuth_(body, 'Owner', setWorkspaceAccess_));
       case 'removeUser': return jsonOut(withAuth_(body, 'Owner', removeUser_));
       case 'listAll': return jsonOut(withAuth_(body, 'Viewer', listAll_));
+      case 'createWorkspace': return jsonOut(withAuth_(body, 'Editor', createWorkspace_));
+      case 'updateWorkspace': return jsonOut(withAuth_(body, 'Editor', updateWorkspace_));
+      case 'deleteWorkspace': return jsonOut(withAuth_(body, 'Owner', deleteWorkspace_));
       case 'create': return jsonOut(withAuth_(body, 'Editor', createRecord_));
       case 'update': return jsonOut(withAuth_(body, 'Editor', updateRecord_));
       case 'delete': return jsonOut(withAuth_(body, 'Editor', deleteRecord_));
@@ -99,11 +110,6 @@ function ensureSchema_() {
       sh = ss.insertSheet(name);
       sh.appendRow(SHEETS[name]);
       sh.setFrozenRows(1);
-      if (name === 'Categories') {
-        DEFAULT_CATEGORIES.forEach(function(c) {
-          sh.appendRow([Utilities.getUuid(), c[0], c[1], c[2]]);
-        });
-      }
     }
   });
   const trash = ss.getSheetByName('Sheet1');
@@ -140,7 +146,7 @@ function findRowIndexById_(sh, headers, id) {
   const idCol = headers.indexOf('id');
   const data = sh.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][idCol]) === String(id)) return i + 1; // 1-indexed sheet row
+    if (String(data[i][idCol]) === String(id)) return i + 1;
   }
   return -1;
 }
@@ -189,14 +195,18 @@ function bootstrap_(body) {
     id: Utilities.getUuid(), name: body.name, email: String(body.email).toLowerCase(),
     code: userCode, role: 'Owner', invitedAt: new Date().toISOString(), lastSeen: new Date().toISOString()
   });
+  // Seed a default "Personal" workspace so the app isn't empty on first login.
+  const ws = appendRow_('Workspaces', { id: Utilities.getUuid(), name: 'Personal', icon: 'user', color: '#2563EB', createdAt: new Date().toISOString() });
+  seedDefaultCategories_(ws.id);
   logActivity_(user.email, 'bootstrap', 'Created as Owner');
   return { ok: true, user: sanitizeUser_(user), accessCode: userCode };
 }
 
 function login_(body) {
-  const email = String(body.email || '').toLowerCase();
+  const email = String(body.email || '').toLowerCase().trim();
+  const code = String(body.code || '').trim();
   const users = readAll_('Users');
-  const user = users.find(function(u) { return String(u.email).toLowerCase() === email && String(u.code) === String(body.code); });
+  const user = users.find(function(u) { return String(u.email).toLowerCase() === email && String(u.code) === code; });
   if (!user) return { ok: false, error: 'Invalid email or access code.' };
   updateRowById_('Users', user.id, { lastSeen: new Date().toISOString() });
   logActivity_(user.email, 'login', '');
@@ -211,7 +221,6 @@ function generateCode_() {
   return Math.random().toString(36).slice(2, 6).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
 }
 
-// Validates auth on every non-bootstrap request and enforces role server-side.
 function withAuth_(body, minRole, fn) {
   const auth = body.auth || {};
   const users = readAll_('Users');
@@ -230,6 +239,22 @@ function roleAtLeast_(role, min) {
 }
 
 // ----------------------------------------------------------------------
+// WORKSPACE ACCESS
+// ----------------------------------------------------------------------
+
+function accessibleWorkspaceIds_(user) {
+  const all = readAll_('Workspaces').map(function(w){ return w.id; });
+  if (roleAtLeast_(user.role, 'Owner')) return all;
+  const grants = readAll_('UserWorkspaceAccess').filter(function(g){ return g.userId === user.id; }).map(function(g){ return g.workspaceId; });
+  return all.filter(function(id){ return grants.indexOf(id) > -1; });
+}
+
+function assertWorkspaceAccess_(user, workspaceId) {
+  if (!workspaceId) throw new Error('workspaceId is required.');
+  if (accessibleWorkspaceIds_(user).indexOf(workspaceId) === -1) throw new Error('No access to that workspace.');
+}
+
+// ----------------------------------------------------------------------
 // PEOPLE (Owner only)
 // ----------------------------------------------------------------------
 
@@ -245,6 +270,10 @@ function invite_(body, actingUser) {
     id: Utilities.getUuid(), name: body.name, email: email, code: code,
     role: body.role, invitedAt: new Date().toISOString(), lastSeen: ''
   });
+  const workspaceIds = body.workspaceIds || [];
+  workspaceIds.forEach(function(wid) {
+    appendRow_('UserWorkspaceAccess', { id: Utilities.getUuid(), userId: user.id, workspaceId: wid });
+  });
   try {
     MailApp.sendEmail({
       to: email,
@@ -255,9 +284,7 @@ function invite_(body, actingUser) {
         'Access code: ' + code + '\n\n' +
         'Open the app, choose "Log in", and enter these three values.'
     });
-  } catch (err) {
-    // Mail failure shouldn't block invite creation; the code is still returned to the Owner.
-  }
+  } catch (err) { /* mail failure shouldn't block invite creation */ }
   logActivity_(actingUser.email, 'invite', 'Invited ' + email + ' as ' + body.role);
   return { ok: true, user: sanitizeUser_(user), accessCode: code };
 }
@@ -269,29 +296,95 @@ function updateUserRole_(body, actingUser) {
   return { ok: true, user: sanitizeUser_(updated) };
 }
 
+function setWorkspaceAccess_(body, actingUser) {
+  if (!body.userId || !body.workspaceIds) return { ok: false, error: 'userId and workspaceIds required.' };
+  const existing = readAll_('UserWorkspaceAccess').filter(function(g){ return g.userId === body.userId; });
+  existing.forEach(function(g){ deleteRowById_('UserWorkspaceAccess', g.id); });
+  body.workspaceIds.forEach(function(wid){
+    appendRow_('UserWorkspaceAccess', { id: Utilities.getUuid(), userId: body.userId, workspaceId: wid });
+  });
+  logActivity_(actingUser.email, 'setWorkspaceAccess', body.userId + ' -> ' + body.workspaceIds.join(','));
+  return { ok: true };
+}
+
 function removeUser_(body, actingUser) {
   if (!body.id) return { ok: false, error: 'id required.' };
   if (body.id === actingUser.id) return { ok: false, error: 'You cannot remove yourself.' };
   deleteRowById_('Users', body.id);
+  readAll_('UserWorkspaceAccess').filter(function(g){ return g.userId === body.id; }).forEach(function(g){ deleteRowById_('UserWorkspaceAccess', g.id); });
   logActivity_(actingUser.email, 'removeUser', body.id);
   return { ok: true };
 }
 
 // ----------------------------------------------------------------------
-// GENERIC CRUD (for Transactions, Accounts, Categories, Budgets, Goals,
-// Loans, LoanPayments, Preferences, Investments)
+// WORKSPACES
 // ----------------------------------------------------------------------
 
-const CRUD_ENTITIES = ['Transactions','Accounts','Categories','Budgets','Goals','Loans','LoanPayments','Preferences','Investments','ExchangeRates'];
+function createWorkspace_(body, user) {
+  const d = body.data || {};
+  if (!d.name) return { ok: false, error: 'Workspace name is required.' };
+  const ws = appendRow_('Workspaces', { id: Utilities.getUuid(), name: d.name, icon: d.icon || 'briefcase', color: d.color || '#2563EB', createdAt: new Date().toISOString() });
+  appendRow_('UserWorkspaceAccess', { id: Utilities.getUuid(), userId: user.id, workspaceId: ws.id });
+  seedDefaultCategories_(ws.id);
+  logActivity_(user.email, 'createWorkspace', ws.name);
+  return { ok: true, workspace: ws };
+}
+function seedDefaultCategories_(workspaceId) {
+  DEFAULT_CATEGORIES.forEach(function(c) {
+    appendRow_('Categories', { id: Utilities.getUuid(), workspaceId: workspaceId, name: c[0], type: c[1], isDefault: c[2] });
+  });
+}
+function updateWorkspace_(body, user) {
+  assertWorkspaceAccess_(user, body.id);
+  const updated = updateRowById_('Workspaces', body.id, body.data || {});
+  logActivity_(user.email, 'updateWorkspace', body.id);
+  return { ok: true, workspace: updated };
+}
+function deleteWorkspace_(body, user) {
+  const wallets = readAll_('Wallets').filter(function(w){ return w.workspaceId === body.id; });
+  if (wallets.length) return { ok: false, error: 'Delete or move this workspace\'s wallets first.' };
+  deleteRowById_('Workspaces', body.id);
+  ['Categories','Budgets','Goals','Loans','Preferences','Investments'].forEach(function(entity){
+    readAll_(entity).filter(function(r){ return r.workspaceId === body.id; }).forEach(function(r){ deleteRowById_(entity, r.id); });
+  });
+  readAll_('UserWorkspaceAccess').filter(function(g){ return g.workspaceId === body.id; }).forEach(function(g){ deleteRowById_('UserWorkspaceAccess', g.id); });
+  logActivity_(user.email, 'deleteWorkspace', body.id);
+  return { ok: true };
+}
+
+// ----------------------------------------------------------------------
+// GENERIC CRUD — every entity here carries (or resolves to) a workspaceId
+// ----------------------------------------------------------------------
+
+const CRUD_ENTITIES = ['Wallets','Transactions','Categories','Budgets','Goals','Loans','LoanPayments','Preferences','Investments','ExchangeRates'];
+const WORKSPACE_SCOPED = ['Wallets','Transactions','Categories','Budgets','Goals','Loans','Preferences','Investments'];
 
 function assertEntity_(entity) {
   if (CRUD_ENTITIES.indexOf(entity) === -1) throw new Error('Not a CRUD entity: ' + entity);
 }
 
+// LoanPayments has no workspaceId of its own — resolve via its Loan.
+function workspaceIdForRecord_(entity, data) {
+  if (entity === 'LoanPayments') {
+    const loan = readAll_('Loans').find(function(l){ return l.id === data.loanId; });
+    return loan ? loan.workspaceId : null;
+  }
+  return data.workspaceId;
+}
+
 function listAll_(body, user) {
-  const out = { ok: true, users: readAll_('Users').map(sanitizeUser_) };
-  CRUD_ENTITIES.forEach(function(name) { out[name] = readAll_(name); });
-  if (roleAtLeast_(user.role, 'Owner')) out.activityLog = readAll_('ActivityLog').slice(-200);
+  const wsIds = accessibleWorkspaceIds_(user);
+  const out = { ok: true, users: readAll_('Users').map(sanitizeUser_), workspaces: readAll_('Workspaces').filter(function(w){ return wsIds.indexOf(w.id) > -1; }) };
+  WORKSPACE_SCOPED.forEach(function(name) {
+    out[name] = readAll_(name).filter(function(r) { return wsIds.indexOf(r.workspaceId) > -1; });
+  });
+  const visibleLoanIds = (out.Loans || []).map(function(l){ return l.id; });
+  out.LoanPayments = readAll_('LoanPayments').filter(function(p){ return visibleLoanIds.indexOf(p.loanId) > -1; });
+  out.ExchangeRates = readAll_('ExchangeRates'); // currency rates are global, not workspace-scoped
+  if (roleAtLeast_(user.role, 'Owner')) {
+    out.activityLog = readAll_('ActivityLog').slice(-200);
+    out.userWorkspaceAccess = readAll_('UserWorkspaceAccess');
+  }
   return out;
 }
 
@@ -299,10 +392,9 @@ function createRecord_(body, user) {
   assertEntity_(body.entity);
   const obj = body.data || {};
   obj.id = obj.id || Utilities.getUuid();
-  if (body.entity === 'Transactions') {
-    obj.createdBy = user.email;
-    obj.createdAt = new Date().toISOString();
-  }
+  const wsId = workspaceIdForRecord_(body.entity, obj);
+  if (WORKSPACE_SCOPED.indexOf(body.entity) > -1 || body.entity === 'LoanPayments') assertWorkspaceAccess_(user, wsId);
+  if (body.entity === 'Transactions') { obj.createdBy = user.email; obj.createdAt = new Date().toISOString(); }
   const created = appendRow_(body.entity, obj);
   logActivity_(user.email, 'create:' + body.entity, obj.id);
   return { ok: true, record: created };
@@ -310,11 +402,13 @@ function createRecord_(body, user) {
 
 function updateRecord_(body, user) {
   assertEntity_(body.entity);
-  if (body.entity === 'Transactions') {
-    const existing = readAll_('Transactions').find(function(t) { return t.id === body.id; });
-    if (existing && existing.transferId) {
-      return { ok: false, error: 'Editing a Transfer is disabled. Delete it and recreate instead.' };
-    }
+  const existingList = readAll_(body.entity);
+  const existing = existingList.find(function(r){ return r.id === body.id; });
+  if (!existing) return { ok: false, error: 'Record not found.' };
+  const wsId = workspaceIdForRecord_(body.entity, existing);
+  assertWorkspaceAccess_(user, wsId);
+  if (body.entity === 'Transactions' && existing.transferId) {
+    return { ok: false, error: 'Editing a Transfer is disabled. Delete it and recreate instead.' };
   }
   const updated = updateRowById_(body.entity, body.id, body.data || {});
   logActivity_(user.email, 'update:' + body.entity, body.id);
@@ -323,11 +417,12 @@ function updateRecord_(body, user) {
 
 function deleteRecord_(body, user) {
   assertEntity_(body.entity);
-  if (body.entity === 'Transactions') {
-    const existing = readAll_('Transactions').find(function(t) { return t.id === body.id; });
-    if (existing && existing.transferId) {
-      return deleteTransfer_({ transferId: existing.transferId }, user);
-    }
+  const existing = readAll_(body.entity).find(function(r){ return r.id === body.id; });
+  if (!existing) return { ok: true };
+  const wsId = workspaceIdForRecord_(body.entity, existing);
+  assertWorkspaceAccess_(user, wsId);
+  if (body.entity === 'Transactions' && existing.transferId) {
+    return deleteTransfer_({ transferId: existing.transferId }, user);
   }
   const ok = deleteRowById_(body.entity, body.id);
   logActivity_(user.email, 'delete:' + body.entity, body.id);
@@ -335,28 +430,35 @@ function deleteRecord_(body, user) {
 }
 
 // ----------------------------------------------------------------------
-// TRANSFERS (linked pair of transactions)
+// TRANSFERS (linked pair of transactions — same or different Workspaces)
 // ----------------------------------------------------------------------
 
 function createTransfer_(body, user) {
   const d = body.data || {};
-  if (!d.fromAccount || !d.toAccount || d.fromAccount === d.toAccount) {
-    return { ok: false, error: 'Pick two different accounts.' };
+  if (!d.fromWallet || !d.toWallet || d.fromWallet === d.toWallet) {
+    return { ok: false, error: 'Pick two different wallets.' };
   }
+  const wallets = readAll_('Wallets');
+  const fromW = wallets.find(function(w){ return w.id === d.fromWallet; });
+  const toW = wallets.find(function(w){ return w.id === d.toWallet; });
+  if (!fromW || !toW) return { ok: false, error: 'Wallet not found.' };
+  assertWorkspaceAccess_(user, fromW.workspaceId);
+  assertWorkspaceAccess_(user, toW.workspaceId);
+
   const transferId = Utilities.getUuid();
   const now = new Date().toISOString();
   const legOut = {
-    id: Utilities.getUuid(), date: d.date, type: 'Transfer', account: d.fromAccount,
-    category: 'Transfer', amount: -Math.abs(d.amount), currency: d.currency || '',
-    description: d.description || ('Transfer to ' + d.toAccount), tags: '', recurring: '',
-    nextDueDate: '', receiptUrl: '', transferId: transferId, transferPeer: d.toAccount,
+    id: Utilities.getUuid(), workspaceId: fromW.workspaceId, wallet: d.fromWallet, type: 'Transfer',
+    category: 'Transfer', amount: -Math.abs(d.amount), currency: fromW.currency, date: d.date,
+    description: d.description || ('Transfer to ' + toW.name), tags: '', recurring: '',
+    nextDueDate: '', receiptUrl: '', transferId: transferId, transferPeer: d.toWallet,
     createdBy: user.email, createdAt: now
   };
   const legIn = {
-    id: Utilities.getUuid(), date: d.date, type: 'Transfer', account: d.toAccount,
-    category: 'Transfer', amount: Math.abs(d.amount), currency: d.currency || '',
-    description: d.description || ('Transfer from ' + d.fromAccount), tags: '', recurring: '',
-    nextDueDate: '', receiptUrl: '', transferId: transferId, transferPeer: d.fromAccount,
+    id: Utilities.getUuid(), workspaceId: toW.workspaceId, wallet: d.toWallet, type: 'Transfer',
+    category: 'Transfer', amount: Math.abs(d.amount), currency: toW.currency, date: d.date,
+    description: d.description || ('Transfer from ' + fromW.name), tags: '', recurring: '',
+    nextDueDate: '', receiptUrl: '', transferId: transferId, transferPeer: d.fromWallet,
     createdBy: user.email, createdAt: now
   };
   appendRow_('Transactions', legOut);
@@ -368,6 +470,7 @@ function createTransfer_(body, user) {
 function deleteTransfer_(body, user) {
   const all = readAll_('Transactions');
   const legs = all.filter(function(t) { return t.transferId === body.transferId; });
+  legs.forEach(function(t) { assertWorkspaceAccess_(user, t.workspaceId); });
   legs.forEach(function(t) { deleteRowById_('Transactions', t.id); });
   logActivity_(user.email, 'deleteTransfer', body.transferId);
   return { ok: true, deleted: legs.length };
@@ -375,11 +478,11 @@ function deleteTransfer_(body, user) {
 
 // ----------------------------------------------------------------------
 // RECURRING TRANSACTIONS
-// Called by the frontend on app open; generates any occurrences due.
 // ----------------------------------------------------------------------
 
 function processRecurring_(body, user) {
-  const all = readAll_('Transactions');
+  const wsIds = accessibleWorkspaceIds_(user);
+  const all = readAll_('Transactions').filter(function(t){ return wsIds.indexOf(t.workspaceId) > -1; });
   const templates = all.filter(function(t) { return t.recurring && t.nextDueDate; });
   const today = new Date(); today.setHours(0,0,0,0);
   const created = [];
@@ -388,8 +491,8 @@ function processRecurring_(body, user) {
     let guard = 0;
     while (due <= today && guard < 24) {
       const copy = {
-        id: Utilities.getUuid(), date: Utilities.formatDate(due, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
-        type: t.type, account: t.account, category: t.category, amount: t.amount, currency: t.currency,
+        id: Utilities.getUuid(), workspaceId: t.workspaceId, date: Utilities.formatDate(due, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+        type: t.type, wallet: t.wallet, category: t.category, amount: t.amount, currency: t.currency,
         description: t.description, tags: t.tags, recurring: '', nextDueDate: '', receiptUrl: '',
         transferId: '', transferPeer: '', createdBy: 'recurring:' + t.id, createdAt: new Date().toISOString()
       };
@@ -408,7 +511,7 @@ function advanceDate_(date, freq) {
   const d = new Date(date);
   if (freq === 'Weekly') d.setDate(d.getDate() + 7);
   else if (freq === 'Yearly') d.setFullYear(d.getFullYear() + 1);
-  else d.setMonth(d.getMonth() + 1); // Monthly default
+  else d.setMonth(d.getMonth() + 1);
   return d;
 }
 
@@ -425,7 +528,6 @@ function uploadReceipt_(body, user) {
   logActivity_(user.email, 'uploadReceipt', file.getId());
   return { ok: true, url: 'https://drive.google.com/uc?id=' + file.getId(), fileId: file.getId() };
 }
-
 function getOrCreateReceiptsFolder_() {
   const name = 'Ledger Receipts';
   const it = DriveApp.getFoldersByName(name);
@@ -434,7 +536,7 @@ function getOrCreateReceiptsFolder_() {
 }
 
 // ----------------------------------------------------------------------
-// EXCHANGE RATES (free public API, no key)
+// EXCHANGE RATES (free public API, no key) — global, not workspace-scoped
 // ----------------------------------------------------------------------
 
 function fetchLiveRates_(body, user) {
