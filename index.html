@@ -169,10 +169,15 @@ tr.row-hover:hover{background:var(--surface-2);}
 
 /* ---------- bottom nav (mobile) ---------- */
 .bottom-nav{display:none;}
+.menu-btn{display:none;}
+.drawer-overlay{position:fixed; inset:0; background:rgba(2,6,23,.5); backdrop-filter:blur(3px); z-index:200; display:flex;}
+.drawer-panel{width:270px; max-width:82vw; height:100%; background:var(--surface); box-shadow:var(--shadow-lg); padding:16px 12px; overflow-y:auto; display:flex; flex-direction:column; gap:4px; animation:drawerIn .2s ease;}
+@keyframes drawerIn{from{transform:translateX(-16px);opacity:0;} to{transform:translateX(0);opacity:1;}}
 @media (max-width:900px){
   .sidebar{display:none;}
   .content{padding:6px 16px 100px;}
   .topbar{padding:14px 16px;}
+  .menu-btn{display:flex;}
   .bottom-nav{
     display:flex; position:fixed; bottom:0; left:0; right:0; z-index:50; background:var(--surface);
     border-top:1px solid var(--border); padding:8px 4px calc(8px + env(safe-area-inset-bottom));
@@ -620,23 +625,29 @@ function canEdit(){ return S.auth && (S.auth.role === 'Owner' || S.auth.role ===
 
 function titleFor(route){ const n = NAV.find(function(x){return x.id===route;}); return n?n.label:'The Ledger'; }
 
-function shellHtml(innerHtml){
+function sidebarInnerHtml(){
   const navItems = NAV.filter(function(n){ return !n.ownerOnly || isOwner(); });
   return '' +
-  '<div class="sidebar">' +
     '<div class="brand"><div class="brand-mark">TL</div><div class="brand-name">The Ledger</div></div>' +
     workspaceSwitcherHtml() +
     navItems.map(function(n){
-      return '<div class="nav-item '+(S.route===n.id?'active':'')+'" onclick="go(\''+n.id+'\')">'+iconSvg(n.icon)+'<span>'+n.label+'</span></div>';
+      return '<div class="nav-item '+(S.route===n.id?'active':'')+'" onclick="go(\''+n.id+'\');closeMobileMenu();">'+iconSvg(n.icon)+'<span>'+n.label+'</span></div>';
     }).join('') +
     '<div style="flex:1"></div>' +
     '<div class="nav-sep"></div>' +
     '<div class="nav-item" onclick="toggleTheme()">'+iconSvg(S.theme==='dark'?'sun':'moon')+'<span>'+(S.theme==='dark'?'Light mode':'Dark mode')+'</span></div>' +
-    '<div class="nav-item" onclick="doLogout()">'+iconSvg('log-out')+'<span>Log out</span></div>' +
-  '</div>' +
+    '<div class="nav-item" onclick="doLogout()">'+iconSvg('log-out')+'<span>Log out</span></div>';
+}
+
+function shellHtml(innerHtml){
+  return '' +
+  '<div class="sidebar">' + sidebarInnerHtml() + '</div>' +
   '<div class="main">' +
     '<div class="topbar">' +
-      '<div class="topbar-title">'+titleFor(S.route)+'</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;">' +
+        '<div class="icon-btn menu-btn" onclick="openMobileMenu()" title="Menu">'+iconSvg('menu')+'</div>' +
+        '<div class="topbar-title">'+titleFor(S.route)+'</div>' +
+      '</div>' +
       '<div class="topbar-actions">' +
         '<span class="pill pill-success" id="syncBadge">Synced</span>' +
         '<div class="icon-btn" onclick="toggleBalances()" title="Show/hide balances">'+iconSvg(S.showBalances?'eye':'eye-off')+'</div>' +
@@ -651,9 +662,20 @@ function shellHtml(innerHtml){
       const n = NAV.find(function(x){return x.id===id;});
       return '<div class="nav-item '+(S.route===id?'active':'')+'" onclick="go(\''+id+'\')">'+iconSvg(n.icon)+'<span>'+n.label.split(' ')[0]+'</span></div>';
     }).join('') +
-    '<div class="nav-item" onclick="go(\'settings\')">'+iconSvg('settings')+'<span>More</span></div>' +
+    '<div class="nav-item" onclick="openMobileMenu()">'+iconSvg('menu')+'<span>More</span></div>' +
   '</div>';
 }
+
+function openMobileMenu(){
+  closeMobileMenu();
+  const wrap = document.createElement('div');
+  wrap.className = 'drawer-overlay'; wrap.id = 'mobileDrawer';
+  wrap.onclick = function(e){ if (e.target===wrap) closeMobileMenu(); };
+  wrap.innerHTML = '<div class="drawer-panel">' + sidebarInnerHtml() + '</div>';
+  document.body.appendChild(wrap);
+  safeIcons();
+}
+function closeMobileMenu(){ const el = document.getElementById('mobileDrawer'); if (el) el.remove(); }
 
 function iconSvg(name){ return '<i data-lucide="'+name+'"></i>'; }
 function safeIcons(){
@@ -681,11 +703,11 @@ function workspaceSwitcherHtml(){
   const label = allSelected ? 'All Workspaces' : (S.selectedWorkspaces.length===1 ? wsName(S.selectedWorkspaces[0]) : S.selectedWorkspaces.length + ' Workspaces');
   return '' +
   '<div style="margin-bottom:10px;">' +
-    '<div class="icon-btn" style="width:100%;justify-content:space-between;padding:0 12px;height:40px;" onclick="toggleWsMenu(event)">' +
+    '<div class="icon-btn ws-switcher-btn" style="width:100%;justify-content:space-between;padding:0 12px;height:40px;" onclick="toggleWsMenu(event)">' +
       '<span style="display:flex;align-items:center;gap:8px;overflow:hidden;"><span class="badge-dot" style="background:var(--primary);"></span><span style="font-weight:700;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escapeHtml(label)+'</span></span>' +
       iconSvg('chevron-down') +
     '</div>' +
-    '<div id="wsMenu" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:14px;margin-top:6px;padding:8px;box-shadow:var(--shadow-md);">' +
+    '<div class="ws-switcher-menu" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:14px;margin-top:6px;padding:8px;box-shadow:var(--shadow-md);">' +
       '<div class="nav-item" style="font-size:12.5px;" onclick="setAllWorkspaces()">'+iconSvg('check-check')+'<span>Select all</span></div>' +
       '<div class="nav-sep"></div>' +
       all.map(function(w){
@@ -697,8 +719,15 @@ function workspaceSwitcherHtml(){
     '</div>' +
   '</div>';
 }
-function toggleWsMenu(e){ e.stopPropagation(); const m = document.getElementById('wsMenu'); m.style.display = m.style.display==='none'?'block':'none'; }
-document.addEventListener('click', function(){ const m = document.getElementById('wsMenu'); if (m) m.style.display='none'; });
+function toggleWsMenu(e){
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const menu = btn.nextElementSibling;
+  const isOpen = menu.style.display !== 'none';
+  document.querySelectorAll('.ws-switcher-menu').forEach(function(m){ m.style.display='none'; });
+  menu.style.display = isOpen ? 'none' : 'block';
+}
+document.addEventListener('click', function(){ document.querySelectorAll('.ws-switcher-menu').forEach(function(m){ m.style.display='none'; }); });
 function toggleWorkspace(id){
   const idx = S.selectedWorkspaces.indexOf(id);
   if (idx>-1) { if (S.selectedWorkspaces.length>1) S.selectedWorkspaces.splice(idx,1); }
@@ -1789,7 +1818,14 @@ function render(){
   }
   app.innerHTML = shellHtml(inner);
   updateSyncBadge();
+  refreshMobileDrawerIfOpen();
   safeIcons();
+}
+function refreshMobileDrawerIfOpen(){
+  const drawer = document.getElementById('mobileDrawer');
+  if (!drawer) return;
+  const panel = drawer.querySelector('.drawer-panel');
+  if (panel) panel.innerHTML = sidebarInnerHtml();
 }
 
 /* PWA install prompt */
