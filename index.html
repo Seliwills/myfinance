@@ -281,6 +281,11 @@ function ensureSelectedWorkspaces(){
   S.selectedWorkspaces = S.selectedWorkspaces.filter(function(id){ return ids.indexOf(id)>-1; });
   if (!S.selectedWorkspaces.length && ids.length) S.selectedWorkspaces = ids.slice();
 }
+// Call before creating a record in a specific workspace so it doesn't seem to
+// "vanish" if that workspace happens to be switched off in the workspace switcher.
+function ensureWorkspaceInView(wsId){
+  if (wsId && S.selectedWorkspaces.indexOf(wsId) === -1) S.selectedWorkspaces.push(wsId);
+}
 function walletsInSelected(){ return S.data.Wallets.filter(function(w){ return S.selectedWorkspaces.indexOf(w.workspaceId)>-1; }); }
 function walletsInWorkspace(wsId){ return S.data.Wallets.filter(function(w){ return w.workspaceId===wsId; }); }
 function workspaceOf(id, entity){
@@ -348,7 +353,24 @@ function pullAll(){
     S.lastPull = Date.now();
     saveState();
     render();
+    autoFetchRatesIfNeeded();
   }).catch(function(err){ console.warn('pull failed', err); });
+}
+
+// Exchange rates are fetched automatically — no manual button needed. A wallet
+// in a foreign currency would otherwise silently be treated at a 1:1 rate
+// (e.g. 1 USD read as 1 GHS) until someone remembered to press "fetch rates".
+function autoFetchRatesIfNeeded(){
+  if (!S.serverUrl || !S.auth || !navigator.onLine) return;
+  const rates = S.data.ExchangeRates || [];
+  const freshForBase = rates.filter(function(r){ return r.fromCurrency === S.baseCurrency; });
+  const newestUpdate = freshForBase.reduce(function(max,r){ const t = new Date(r.updatedAt).getTime(); return t>max?t:max; }, 0);
+  const staleMs = 12*60*60*1000; // refresh at most twice a day
+  const isStale = !freshForBase.length || (Date.now()-newestUpdate) > staleMs;
+  if (!isStale) return;
+  callServer('fetchRates', { base: S.baseCurrency, targets: CURRENCIES.filter(function(c){ return c!==S.baseCurrency; }) })
+    .then(function(res){ if (res && res.ok) pullAll(); })
+    .catch(function(){ /* offline or provider down — silently retry on next pull */ });
 }
 
 function updateSyncBadge(){
@@ -1099,6 +1121,7 @@ function saveTxModal(id){
   const fileInput = document.getElementById('fReceipt');
   const finish = function(receiptUrl){
     if (receiptUrl) data.receiptUrl = receiptUrl;
+    ensureWorkspaceInView(data.workspaceId);
     if (id) localUpdate('Transactions', id, data); else localCreate('Transactions', data);
     closeModal();
   };
@@ -1151,6 +1174,10 @@ function saveTransfer(){
   const amount = Math.abs(Number(document.getElementById('trAmount').value||0));
   if (from===to) return toast('Pick two different wallets', 'error');
   if (!amount) return toast('Enter an amount', 'error');
+  const fromW = S.data.Wallets.find(function(w){return w.id===from;});
+  const toW = S.data.Wallets.find(function(w){return w.id===to;});
+  if (fromW) ensureWorkspaceInView(fromW.workspaceId);
+  if (toW) ensureWorkspaceInView(toW.workspaceId);
   localTransfer({ date: document.getElementById('trDate').value, fromWallet:from, toWallet:to, amount:amount, description: document.getElementById('trDesc').value });
   closeModal();
 }
@@ -1214,6 +1241,7 @@ function openWalletModal(id){
 function saveWalletModal(id){
   const data = { workspaceId: document.getElementById('fWorkspace').value, name: document.getElementById('fName').value.trim(), type: document.getElementById('fType').value, currency: document.getElementById('fCurrency').value, openingBalance: Number(document.getElementById('fOpening').value||0), status:'Active' };
   if (!data.name) return toast('Name is required', 'error');
+  ensureWorkspaceInView(data.workspaceId);
   if (id) localUpdate('Wallets', id, data); else localCreate('Wallets', data);
   closeModal();
 }
@@ -1292,6 +1320,7 @@ function openBudgetModal(id){
 function refreshBudgetCategory(){ document.getElementById('fCategory').innerHTML = categoryOptions('Expense', '', document.getElementById('fWorkspace').value); }
 function saveBudgetModal(id){
   const data = { workspaceId: document.getElementById('fWorkspace').value, category: document.getElementById('fCategory').value, wallet: document.getElementById('fWallet').value, monthlyLimit: Number(document.getElementById('fLimit').value||0), notes: document.getElementById('fNotes').value };
+  ensureWorkspaceInView(data.workspaceId);
   if (id) localUpdate('Budgets', id, data); else localCreate('Budgets', data);
   closeModal();
 }
@@ -1332,6 +1361,7 @@ function openGoalModal(id){
 function saveGoalModal(id){
   const data = { workspaceId: document.getElementById('fWorkspace').value, name: document.getElementById('fName').value.trim(), kind: document.getElementById('fKind').value, targetAmount: Number(document.getElementById('fTarget').value||0), currentAmount: Number(document.getElementById('fCurrent').value||0), deadline: document.getElementById('fDeadline').value, notes: document.getElementById('fNotes').value };
   if (!data.name) return toast('Name is required', 'error');
+  ensureWorkspaceInView(data.workspaceId);
   if (id) localUpdate('Goals', id, data); else localCreate('Goals', data);
   closeModal();
 }
@@ -1376,6 +1406,7 @@ function openLoanModal(id){
 function saveLoanModal(id){
   const data = { workspaceId: document.getElementById('fWorkspace').value, direction: document.getElementById('fDirection').value, counterparty: document.getElementById('fCounterparty').value.trim(), principal: Number(document.getElementById('fPrincipal').value||0), currency: document.getElementById('fCurrency').value, interestRate: Number(document.getElementById('fRate').value||0), dueDate: document.getElementById('fDue').value, status: document.getElementById('fStatus').value, notes: document.getElementById('fNotes').value, startDate: todayISO() };
   if (!data.counterparty) return toast('Counterparty is required', 'error');
+  ensureWorkspaceInView(data.workspaceId);
   if (id) localUpdate('Loans', id, data); else localCreate('Loans', data);
   closeModal();
 }
@@ -1440,6 +1471,7 @@ function saveInvestmentModal(id){
   const w = S.data.Wallets.find(function(a){return a.id===walletId;});
   const data = { name: document.getElementById('fName').value.trim(), assetType: document.getElementById('fAssetType').value, wallet: walletId, workspaceId: w?w.workspaceId:'', amountInvested: Number(document.getElementById('fInvested').value||0), currentValue: Number(document.getElementById('fCurrentValue').value||0), date: document.getElementById('fDate').value, notes: document.getElementById('fNotes').value };
   if (!data.name) return toast('Name is required', 'error');
+  ensureWorkspaceInView(data.workspaceId);
   if (id) localUpdate('Investments', id, data); else localCreate('Investments', data);
   closeModal();
 }
@@ -1645,11 +1677,14 @@ function renderSettings(){
   '<div class="grid grid-2" style="align-items:start;">' +
     '<div class="card">' +
       '<h4 style="margin-bottom:14px;">General</h4>' +
-      '<div class="field"><label>Base Currency</label><select onchange="S.baseCurrency=this.value;saveState();render();">'+CURRENCIES.map(function(c){return '<option '+(S.baseCurrency===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select></div>' +
+      '<div class="field"><label>Base Currency</label><select onchange="S.baseCurrency=this.value;saveState();render();autoFetchRatesIfNeeded();">'+CURRENCIES.map(function(c){return '<option '+(S.baseCurrency===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select></div>' +
       settingsRow('Dark mode', toggleHtml(S.theme==='dark','toggleTheme()')) +
       settingsRow('Hide balances', toggleHtml(!S.showBalances,'toggleBalances()')) +
       '<div class="divider"></div>' +
-      '<div style="display:flex;gap:10px;align-items:center;"><span class="btn btn-outline btn-sm" onclick="fetchLiveRates()">'+iconSvg('refresh-cw')+' Fetch live rates</span><span class="muted" style="font-size:12px;">against '+S.baseCurrency+'</span></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;">' +
+        '<span class="muted" style="font-size:12px;">Rates against '+S.baseCurrency+' update automatically'+(latestRateTime()?' — last updated '+fmtDate(latestRateTime()):'')+'.</span>' +
+        '<span class="icon-btn" style="width:32px;height:32px;" title="Refresh now" onclick="fetchLiveRates()">'+iconSvg('refresh-cw')+'</span>' +
+      '</div>' +
       (S.data.ExchangeRates.length ? '<div style="margin-top:10px;font-size:12.5px;">'+S.data.ExchangeRates.slice(0,8).map(function(r){return '<div style="display:flex;justify-content:space-between;padding:3px 0;"><span>'+r.fromCurrency+' → '+r.toCurrency+'</span><span class="mono">'+Number(r.rate).toFixed(4)+'</span></div>';}).join('')+'</div>' : '') +
     '</div>' +
     '<div class="card">' +
@@ -1700,6 +1735,11 @@ function sha256(str){
   return crypto.subtle.digest('SHA-256', enc).then(function(buf){
     return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
   });
+}
+function latestRateTime(){
+  const rates = (S.data.ExchangeRates||[]).filter(function(r){ return r.fromCurrency===S.baseCurrency; });
+  if (!rates.length) return null;
+  return rates.reduce(function(latest,r){ return (!latest || new Date(r.updatedAt)>new Date(latest)) ? r.updatedAt : latest; }, null);
 }
 function fetchLiveRates(){
   if (!S.serverUrl || !S.auth) return toast('Log in first', 'error');
@@ -1780,13 +1820,42 @@ function renderPinLock(){
 function tryPin(){
   const val = document.getElementById('pinInput').value.trim();
   sha256(val).then(function(hash){
-    if (hash === S.pinHash) { window.__pinUnlocked = true; render(); }
-    else toast('Incorrect PIN', 'error');
+    if (hash === S.pinHash) { window.__pinAttempts = 0; window.__pinUnlocked = true; render(); }
+    else {
+      window.__pinAttempts = (window.__pinAttempts||0) + 1;
+      if (window.__pinAttempts >= 5) {
+        const input = document.getElementById('pinInput');
+        if (input) input.disabled = true;
+        toast('Too many attempts. Try again in 15 seconds.', 'error');
+        setTimeout(function(){ window.__pinAttempts = 0; const el = document.getElementById('pinInput'); if (el) el.disabled = false; }, 15000);
+      } else {
+        toast('Incorrect PIN', 'error');
+      }
+    }
   });
 }
 function forgotPin(){
-  if (!confirm('Turn off the PIN lock for this device?')) return;
-  S.pinEnabled = false; S.pinHash = ''; window.__pinUnlocked = true; saveState(); render();
+  // Turning off the PIN must never permanently lock someone out of their own
+  // device, but a single confirm() click is not real security — anyone who
+  // picks up the phone could bypass it instantly. Requiring the account's own
+  // login credentials (already known only to whoever set the PIN up) keeps
+  // the "no permanent lockout" guarantee while actually gating the escape hatch.
+  openModal('' +
+    '<div class="modal-head"><h3>Turn off PIN lock</h3><div class="icon-btn" onclick="closeModal()">'+iconSvg('x')+'</div></div>' +
+    '<p class="muted" style="font-size:13px;">Confirm your account email and access code to turn off the PIN lock on this device.</p>' +
+    '<div class="field"><label>Email</label><input id="fpEmail" placeholder="you@example.com"></div>' +
+    '<div class="field"><label>Access code</label><input id="fpCode" placeholder="Your login access code"></div>' +
+    '<span class="btn btn-danger btn-block" onclick="confirmForgotPin()">Turn off PIN lock</span>'
+  );
+}
+function confirmForgotPin(){
+  const email = document.getElementById('fpEmail').value.trim().toLowerCase();
+  const code = document.getElementById('fpCode').value.trim();
+  if (!S.auth || email !== String(S.auth.email).toLowerCase() || code !== String(S.auth.code)) {
+    toast('Email or access code does not match this account', 'error');
+    return;
+  }
+  S.pinEnabled = false; S.pinHash = ''; window.__pinUnlocked = true; saveState(); closeModal(); render();
 }
 
 /* ---------------------------------------------------------------------
