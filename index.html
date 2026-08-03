@@ -233,7 +233,8 @@ const DEFAULT_STATE = {
   serverUrl: '', auth: null, theme: 'light', baseCurrency: 'GHS',
   showBalances: true, pinHash: '', pinEnabled: false,
   route: 'dashboard', txMonth: null, txAllTime: false,
-  selectedWorkspaces: [], data: {}, syncQueue: [], lastPull: 0
+  selectedWorkspaces: [], data: {}, syncQueue: [], lastPull: 0,
+  lastRateAttempt: 0, lastRateError: ''
 };
 ENTITIES.concat(['Users','ActivityLog','Workspaces','UserWorkspaceAccess']).forEach(function(e){ DEFAULT_STATE.data[e] = []; });
 
@@ -365,12 +366,20 @@ function autoFetchRatesIfNeeded(){
   const rates = S.data.ExchangeRates || [];
   const freshForBase = rates.filter(function(r){ return r.fromCurrency === S.baseCurrency; });
   const newestUpdate = freshForBase.reduce(function(max,r){ const t = new Date(r.updatedAt).getTime(); return t>max?t:max; }, 0);
-  const staleMs = 12*60*60*1000; // refresh at most twice a day
+  const staleMs = 12*60*60*1000; // refresh at most twice a day on success
   const isStale = !freshForBase.length || (Date.now()-newestUpdate) > staleMs;
   if (!isStale) return;
+  // Back off after a failure so a persistent problem (offline, provider down,
+  // API throttling) doesn't get hammered every ~45s — that would make things
+  // worse, not better. Retry failures at most once every 10 minutes.
+  if (S.lastRateAttempt && (Date.now()-S.lastRateAttempt) < 10*60*1000) return;
+  S.lastRateAttempt = Date.now();
   callServer('fetchRates', { base: S.baseCurrency, targets: CURRENCIES.filter(function(c){ return c!==S.baseCurrency; }) })
-    .then(function(res){ if (res && res.ok) pullAll(); })
-    .catch(function(){ /* offline or provider down — silently retry on next pull */ });
+    .then(function(res){
+      if (res && res.ok) { S.lastRateError = ''; saveState(); pullAll(); }
+      else { S.lastRateError = (res && res.error) ? res.error : 'Unknown error from server'; saveState(); }
+    })
+    .catch(function(err){ S.lastRateError = 'Network error: ' + err; saveState(); });
 }
 
 function updateSyncBadge(){
@@ -891,9 +900,11 @@ function renderDashboard(){
   const wallets = walletsInSelected();
   const walletsHtml = wallets.length ? wallets.map(function(w){
     const bal = walletBalance(w.id);
+    const differs = w.currency !== S.baseCurrency;
     return '<div class="row-hover" style="display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:12px;cursor:pointer;" onclick="go(\'transactions\');window.__txWalletFilter=\''+w.id+'\';render();">' +
       '<div style="display:flex;align-items:center;gap:10px;min-width:0;"><span class="badge-dot" style="background:'+accentFor(w.type)+';width:10px;height:10px;flex-shrink:0;"></span><span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(w.name)+(multiWs?' <span class="muted" style="font-weight:400;">· '+wsName(w.workspaceId)+'</span>':'')+'</span></div>' +
-      '<span class="mono '+balClass+'" style="font-weight:700;flex-shrink:0;">'+fmtMoney(bal, w.currency)+'</span></div>';
+      '<div style="text-align:right;flex-shrink:0;"><div class="mono '+balClass+'" style="font-weight:700;">'+fmtMoney(differs ? toBase(bal,w.currency) : bal, S.baseCurrency)+'</div>' +
+      (differs ? '<div class="muted mono '+balClass+'" style="font-size:11px;">'+fmtMoney(bal, w.currency)+' actual</div>' : '') + '</div></div>';
   }).join('') : '<div class="empty">'+iconSvg('wallet')+'<div>Add a wallet to get started.</div></div>';
 
   return '' +
@@ -1201,14 +1212,15 @@ function renderWallets(){
     const wallets = walletsInWorkspace(ws.id);
     const cards = wallets.map(function(w){
       const bal = walletBalance(w.id);
-      const inBase = w.currency!==S.baseCurrency ? '<div class="stat-sub mono">≈ '+fmtMoney(toBase(bal,w.currency))+'</div>' : '';
+      const differs = w.currency !== S.baseCurrency;
+      const nativeLine = differs ? '<div class="stat-sub mono">'+fmtMoney(bal, w.currency)+' actual</div>' : '';
       return '<div class="card" style="border-top:3px solid '+accentFor(w.type)+';cursor:pointer;" onclick="go(\'transactions\');window.__txWalletFilter=\''+w.id+'\';render();">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
           '<div><div style="font-weight:700;">'+escapeHtml(w.name)+'</div><div class="muted" style="font-size:12px;">'+w.type+' · '+w.currency+'</div></div>' +
           (canEdit()?'<div class="icon-btn" style="width:30px;height:30px;" onclick="event.stopPropagation();openWalletModal(\''+w.id+'\')">'+iconSvg('pencil')+'</div>':'') +
         '</div>' +
-        '<div class="stat-value mono '+(S.showBalances?'':'blur-balance')+'" style="margin-top:14px;">'+fmtMoney(bal, w.currency)+'</div>' +
-        inBase +
+        '<div class="stat-value mono '+(S.showBalances?'':'blur-balance')+'" style="margin-top:14px;">'+fmtMoney(differs ? toBase(bal,w.currency) : bal, S.baseCurrency)+'</div>' +
+        nativeLine +
       '</div>';
     }).join('');
     return '<div style="margin-bottom:22px;">' +
@@ -1685,7 +1697,9 @@ function renderSettings(){
         '<span class="muted" style="font-size:12px;">Rates against '+S.baseCurrency+' update automatically'+(latestRateTime()?' — last updated '+fmtDate(latestRateTime()):'')+'.</span>' +
         '<span class="icon-btn" style="width:32px;height:32px;" title="Refresh now" onclick="fetchLiveRates()">'+iconSvg('refresh-cw')+'</span>' +
       '</div>' +
-      (S.data.ExchangeRates.length ? '<div style="margin-top:10px;font-size:12.5px;">'+S.data.ExchangeRates.slice(0,8).map(function(r){return '<div style="display:flex;justify-content:space-between;padding:3px 0;"><span>'+r.fromCurrency+' → '+r.toCurrency+'</span><span class="mono">'+Number(r.rate).toFixed(4)+'</span></div>';}).join('')+'</div>' : '') +
+      (S.lastRateError ? '<div class="pill pill-danger" style="margin-top:8px;white-space:normal;height:auto;padding:8px 10px;">'+iconSvg('alert-circle')+' '+escapeHtml(S.lastRateError)+'</div>' : '') +
+      (!S.data.ExchangeRates.length && !S.lastRateError ? '<div class="pill pill-warning" style="margin-top:8px;">No rates fetched yet — will retry automatically.</div>' : '') +
+      (S.data.ExchangeRates.length ? '<div style="margin-top:10px;font-size:12.5px;">'+S.data.ExchangeRates.filter(function(r){return r.fromCurrency===S.baseCurrency;}).map(function(r){return '<div style="display:flex;justify-content:space-between;padding:3px 0;"><span>'+r.fromCurrency+' → '+r.toCurrency+'</span><span class="mono">'+Number(r.rate).toFixed(4)+'</span></div>';}).join('')+'</div>' : '') +
     '</div>' +
     '<div class="card">' +
       '<h4 style="margin-bottom:14px;">PIN Lock</h4>' +
@@ -1743,10 +1757,13 @@ function latestRateTime(){
 }
 function fetchLiveRates(){
   if (!S.serverUrl || !S.auth) return toast('Log in first', 'error');
-  callServer('fetchRates', { base: S.baseCurrency }).then(function(res){
-    if (!res.ok) return toast(res.error||'Failed to fetch rates', 'error');
-    toast('Rates updated', 'success'); pullAll();
-  }).catch(function(err){ toast('Network error: '+err, 'error'); });
+  callServer('fetchRates', { base: S.baseCurrency, targets: CURRENCIES.filter(function(c){ return c!==S.baseCurrency; }) }).then(function(res){
+    if (!res.ok) { S.lastRateError = res.error||'Failed to fetch rates'; saveState(); return toast(S.lastRateError, 'error'); }
+    S.lastRateError = res.missing && res.missing.length ? ('No rate data for: ' + res.missing.join(', ')) : '';
+    saveState();
+    toast(res.missing && res.missing.length ? 'Rates updated (some currencies unavailable)' : 'Rates updated', res.missing && res.missing.length ? 'error' : 'success');
+    pullAll();
+  }).catch(function(err){ S.lastRateError = 'Network error: '+err; saveState(); toast(S.lastRateError, 'error'); });
 }
 function updateServerUrl(){ S.serverUrl = document.getElementById('fServerUrl').value.trim(); saveState(); toast('Server URL saved', 'success'); pullAll(); }
 function eraseLocalCache(){
